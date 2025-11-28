@@ -53,28 +53,20 @@ const generateName = () => {
   ];
   
   const bases = [
-    // Nombres Reales
     "Juan", "Maria", "Carlos", "Sofia", "Alex", "Kevin", "Brayan", "Karen", "Luis", "Ana", 
     "Pedro", "Lucia", "Diego", "Valeria", "Jorge", "Fernanda", "Miguel", "Camila", 
-    // Gamertags / Animales
     "Slayer", "Wolf", "Ghost", "Panda", "Dragon", "Tiger", "Eagle", "Viper", "Cobra", "Bear", 
     "Fox", "Raven", "Shark", "Hawk", "Lion", "Falcon", "Phoenix", "Titan", "Demon", "Angel",
-    // Tech / Crypto / Conceptos
     "Crypto", "Bitcoin", "Satoshi", "Dev", "Coder", "Hacker", "Glitch", "Pixel", "Token", "Coin",
     "System", "Error", "Null", "Void", "Data", "Bot", "AI", "Nexus", "Matrix",
-    // Referencias / Random
     "Noob", "Pro", "God", "King", "Queen", "Prince", "Joker", "Stark", "Neo", "Goku", 
     "Naruto", "Sonic", "Mario", "Zelda", "Link", "Ash", "Kratos", "Chief", "Doom"
   ];
   
   const suffixes = [
-    // Simbolos Gamer
     "_Xx", "_HD", "_YT", "_TV", "_LP", "_Official", "_Real", "_Gaming", "Plays", 
-    // Numeros
     "123", "321", "69", "420", "666", "777", "88", "99", "007", "2077", "2025", "3000", "101",
-    // Crypto dominios
     ".eth", ".btc", ".sol", ".tez", 
-    // Otros
     "ok", "lol", "uwu", "xD", "_v2", "_beta", ""
   ];
   
@@ -125,17 +117,20 @@ export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
     stateRef.current = { bots, myReputation, myStash, publicSilo, hasActed, amIExpelled, gamePhase, initialPop, amIBankrupt, myDaysBankrupt };
   }, [bots, myReputation, myStash, publicSilo, hasActed, amIExpelled, gamePhase, initialPop, amIBankrupt, myDaysBankrupt]);
 
-  // --- CÁLCULOS ECONÓMICOS (VERSION 4.1: REALISTA) ---
+  // --- CÁLCULOS ECONÓMICOS (CORREGIDO) ---
   const activeBots = bots.filter(b => !b.isDead);
   const activePopulation = activeBots.length + (amIExpelled ? 0 : 1);
   const totalPrivateWealth = activeBots.reduce((acc, bot) => acc + bot.stash, 0) + (amIExpelled ? 0 : myStash);
   const currentTotalWealth = publicSilo + totalPrivateWealth;
   
-  // 1. INFLACIÓN BASE (RIQUEZA PER CÁPITA)
-  // El costo de vida es siempre al menos el 15% de la riqueza promedio de una persona.
-  // Si la sociedad se enriquece, el costo sube.
-  const wealthPerCapita = Math.max(1, currentTotalWealth / (activePopulation || 1));
-  const baseCost = Math.max(5, wealthPerCapita * 0.15); 
+  // 1. INFLACIÓN MONETARIA (Basada SOLO en Riqueza Privada)
+  // Calculamos el promedio de dinero que tiene la gente en el bolsillo.
+  const avgPrivateWealth = Math.max(1, totalPrivateWealth / (activePopulation || 1));
+  
+  // El costo base es el 10% de lo que la gente tiene en promedio.
+  // Inicio (Avg ~50) -> Costo 5.
+  // Rico (Avg ~500) -> Costo 50.
+  const baseCost = Math.max(5, avgPrivateWealth * 0.10); 
 
   // 2. MULTIPLICADOR DE ESCASEZ (Silo Vacío)
   const safeSiloLevel = activePopulation * 50; 
@@ -191,6 +186,8 @@ export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
       };
     });
 
+    const playerStartStash = 60;
+    
     setBots(newBots);
     setPublicSilo(siloStart); 
     setInitialPop(botCount + 1);
@@ -198,11 +195,11 @@ export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
     setDay(1);
     setMyStats({ stole: 0, collaborated: 0, private: 0, rescued: 0, donated: 0 });
     setMyReputation(50);
-    setMyStash(60);
+    setMyStash(playerStartStash);
     setAmIExpelled(false);
     setAmIBankrupt(false);
     setMyDaysBankrupt(0);
-    setNewsLog([{ id: 1, text: "Bienvenido. La inflación subirá con la riqueza.", type: 'INFO' }]);
+    setNewsLog([{ id: 1, text: "Bienvenido. Costo de vida dinámico activado.", type: 'INFO' }]);
     setIsRunning(false);
     setHasActed(false);
   };
