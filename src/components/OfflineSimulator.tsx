@@ -5,7 +5,7 @@ interface PlayerStats {
   stole: number;
   collaborated: number;
   private: number;
-  rescued: number; // Nuevo stat
+  rescued: number;
 }
 
 interface BotPlayer {
@@ -22,13 +22,14 @@ interface VoteSession {
   targetName: string;
   accusedBy: string;
   isOpen: boolean;
+  bailCost: number; // Costo para anular el juicio
 }
 
 interface BailoutRequest {
   targetId: number;
   targetName: string;
   debt: number;
-  reputation: number; // Para saber si vale la pena salvarlo
+  reputation: number;
 }
 
 export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
@@ -48,7 +49,8 @@ export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
   
   // --- UI & SISTEMAS ---
   const [hasActed, setHasActed] = useState(false);
-  const [activeTab, setActiveTab] = useState<'ACTIONS' | 'RANKING' | 'STATS' | 'NEWS'>('ACTIONS');
+  // AÑADIDO: 'LEADER' tab
+  const [activeTab, setActiveTab] = useState<'ACTIONS' | 'RANKING' | 'STATS' | 'NEWS' | 'LEADER'>('ACTIONS');
   const [newsLog, setNewsLog] = useState<string[]>([]);
   
   // Modales
@@ -61,7 +63,7 @@ export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
   const [isRunning, setIsRunning] = useState(false);
   const [speed, setSpeed] = useState(2000);
 
-  // Snapshot para el intervalo
+  // Refs
   const stateRef = useRef({ bots, myReputation, myStash, publicSilo, hasActed, amIExpelled, gamePhase });
   useEffect(() => {
     stateRef.current = { bots, myReputation, myStash, publicSilo, hasActed, amIExpelled, gamePhase };
@@ -110,8 +112,22 @@ export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
   const startVoteAgainst = (targetId: number, targetName: string, accuser: string) => {
       setIsRunning(false);
       setShowSuspects(false);
-      setVoteSession({ targetId, targetName, accusedBy: accuser, isOpen: true });
-      addNews(`⚖️ JUICIO: ${accuser} acusa a ${targetName}.`);
+      // El costo de la fianza es 50 monedas fijas por ahora
+      setVoteSession({ targetId, targetName, accusedBy: accuser, isOpen: true, bailCost: 50 });
+      addNews(`⚖️ JUICIO INICIADO: ${accuser} acusa a ${targetName}.`);
+  };
+
+  const payBailoutInTrial = () => {
+    if (!voteSession) return;
+    const cost = voteSession.bailCost;
+    
+    if (myStash >= cost) {
+      setMyStash(s => s - cost);
+      setMyReputation(r => Math.min(100, r + 10)); // Subes reputación por "benevolente"
+      addNews(`💸 FIANZA PAGADA: TÚ anulaste el juicio de ${voteSession.targetName}.`);
+      setVoteSession(null);
+      setIsRunning(true);
+    }
   };
 
   const finalizeVote = (playerVote: 'YES' | 'NO' | 'ABSTAIN') => {
@@ -132,7 +148,7 @@ export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
         setAmIExpelled(true);
         confiscated = Math.max(0, stateRef.current.myStash);
         setMyStash(0);
-        addNews(`🛑 FUISTE EXPULSADO. Bienes confiscados: ${confiscated}.`);
+        addNews(`🛑 VEREDICTO: CULPABLE. Has sido EXPULSADO. Confiscado: ${confiscated}.`);
       } else {
         setBots(prev => prev.map(b => {
           if (b.id === voteSession.targetId) {
@@ -141,37 +157,35 @@ export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
           }
           return b;
         }));
-        addNews(`🔨 ${voteSession.targetName} expulsado. Se incautaron ${confiscated}.`);
+        addNews(`🔨 VEREDICTO: ${voteSession.targetName} fue EXPULSADO. Se incautaron ${confiscated}.`);
       }
       setPublicSilo(s => s + confiscated);
     } else {
-      addNews(`🛡️ ${voteSession.targetName} declarado INOCENTE.`);
+      addNews(`🛡️ VEREDICTO: ${voteSession.targetName} declarado INOCENTE (${yes} votos vs ${no}).`);
     }
     setVoteSession(null);
     setIsRunning(true);
   };
 
-  // --- BANCARROTA & RESCATES ---
+  // --- BANCARROTA ---
   const handleBailoutAction = (action: 'PUBLIC_BAILOUT' | 'PRIVATE_RESCUE' | 'EXPEL') => {
     if (!bailoutRequest) return;
     const { targetId, debt, targetName } = bailoutRequest;
-    const cost = Math.abs(debt) + 10; // Cubrir deuda + 10 para sobrevivir
+    const cost = Math.abs(debt) + 10;
 
     if (action === 'PUBLIC_BAILOUT') {
       setPublicSilo(s => s - cost);
       addNews(`🏛️ Rescate PÚBLICO aprobado para ${targetName}.`);
-      resolveBailout(targetId, 10); // Queda con 10
+      resolveBailout(targetId, 10);
     } else if (action === 'PRIVATE_RESCUE') {
-      // El jugador paga
       setMyStash(s => s - cost);
-      setMyReputation(r => Math.min(100, r + 15)); // Gran bono de rep
+      setMyReputation(r => Math.min(100, r + 15));
       setMyStats(s => ({ ...s, rescued: s.rescued + 1 }));
       addNews(`🤝 TÚ rescataste a ${targetName} con fondos privados.`);
       resolveBailout(targetId, 10);
     } else {
-      // Expulsar
       addNews(`💀 Se negó ayuda a ${targetName}. Exiliado por deudas.`);
-      resolveBailout(targetId, -1); // -1 significa muerte
+      resolveBailout(targetId, -1);
     }
     setBailoutRequest(null);
     setIsRunning(true);
@@ -191,74 +205,55 @@ export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
     }
   };
 
-  // --- BUCLE DE TIEMPO ---
+  // --- BUCLE ---
   useEffect(() => {
     let interval: any;
     if (isRunning && gamePhase === 'PLAYING') {
       interval = setInterval(() => {
         const currentData = stateRef.current;
         
-        // 1. AUTO-COLABORACIÓN (CORREGIDO)
-        // Si pasaste el día sin actuar, te damos una ganancia NETA segura.
-        // No te cobramos el 'costOfLiving' estándar en el paso 3, ya va implícito aquí.
+        // 1. AUTO-COLABORACIÓN
         if (!currentData.hasActed && !currentData.amIExpelled) {
-           setPublicSilo(s => s + 20); // Aporte básico
-           // Ganancia neta: Te quedas igual + 2 monedas. 
-           // Simula: Ingreso (Costo + 2) - Costo = +2
+           setPublicSilo(s => s + 20); 
            setMyStash(s => s + 2); 
            setMyReputation(r => Math.min(100, r + 1)); 
            setMyStats(s => ({ ...s, collaborated: s.collaborated + 1 }));
         } else if (!currentData.amIExpelled) {
-           // Si SÍ actuaste, te cobramos el costo de vida normal
-           // (Tus ganancias por clic ya se sumaron antes)
            setMyStash(prev => prev - costOfLiving);
         }
 
         setDay(d => d + 1);
         setHasActed(false);
 
-        // 2. QUIEBRAS DE BOTS
+        // 2. QUIEBRAS
         let bankruptcyStop = false;
-        
-        // Determinar Líder de Reputación (Top 1)
         const allActive = [...currentData.bots.filter(b => !b.isDead), { id: 999, name:'TÚ', reputation: currentData.myReputation, isDead: currentData.amIExpelled, stash: currentData.myStash }];
         const leaderRep = allActive.sort((a,b) => b.reputation - a.reputation)[0];
         const iAmLeader = leaderRep.id === 999;
 
         setBots(currentBots => currentBots.map(bot => {
           if (bot.isDead) return bot;
-
           let newStash = bot.stash - costOfLiving;
           
           if (newStash < 0 && !bankruptcyStop) {
-             // ¡BANCARROTA DETECTADA!
              if (iAmLeader) {
-                // Si yo soy el líder, yo decido (público o exilio)
-                // O si soy rico, puedo pagar privado.
                 bankruptcyStop = true;
                 setIsRunning(false);
                 setBailoutRequest({ targetId: bot.id, targetName: bot.name, debt: newStash, reputation: bot.reputation });
              } else {
-                // IA Decide
-                // ¿Hay algún voluntario rico? (Simulado: Top 1 Stash IA)
+                // IA decide
                 const richestBot = currentBots.sort((a,b) => b.stash - a.stash)[0];
-                
-                // Opción A: Rescate Privado IA (Lava reputación)
                 if (richestBot.stash > Math.abs(newStash) + 50 && richestBot.reputation < 50) {
-                   newStash = 10;
-                   // (Simplificado para no pausar)
-                } 
-                // Opción B: Rescate Público (Si Líder Rep lo aprueba)
-                else if (currentData.publicSilo > 500 && bot.reputation > 30) {
+                   newStash = 10; // Rescate privado IA
+                } else if (currentData.publicSilo > 500 && bot.reputation > 30) {
                    newStash = 10;
                    setPublicSilo(s => s - (Math.abs(newStash) + 10));
                 } else {
-                   return { ...bot, isDead: true, stash: 0 }; // Exilio
+                   return { ...bot, isDead: true, stash: 0 }; 
                 }
              }
           }
 
-          // Acciones de Bot (Si sobrevivió)
           let currentStats = { ...bot.stats };
           let newRep = bot.reputation;
           
@@ -266,7 +261,6 @@ export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
              const corruptFactor = (100 - bot.reputation) / 100;
              const roll = Math.random();
              let decision = 'COLLABORATE'; 
-             
              if (roll < (0.1 + (corruptFactor * 0.4))) decision = 'STEAL'; 
              else if (roll > 0.8) decision = 'PRIVATE';
 
@@ -288,10 +282,6 @@ export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
           return { ...bot, reputation: Math.max(0, Math.min(100, newRep)), stash: newStash, stats: currentStats };
         }));
 
-        // 3. JUGADOR EN QUIEBRA? (Se maneja visualmente en el render)
-        // Si tras el cobro quedas < 0, se mostrará el botón de pedir ayuda.
-
-        // 4. COLAPSO
         setPublicSilo(prev => {
           if (prev <= 0) {
             setIsRunning(false);
@@ -332,19 +322,14 @@ export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
     setHasActed(true);
   };
 
-  // --- UI ---
+  // --- UI PREPS ---
   const activePlayers = [...bots.filter(b => !b.isDead), { id: 999, name: 'TÚ', reputation: myReputation, isDead: amIExpelled }];
-  
-  // Calcular Top 3 Reputación
   const sortedByRep = [...activePlayers].sort((a,b) => b.reputation - a.reputation);
   const top3Rep = sortedByRep.slice(0, 3);
   const amITopRep = top3Rep.some(p => p.id === 999);
-  
-  // Calcular Líder Absoluto (Para rescates)
-  const leaderRep = sortedByRep[0];
-  const amILeader = leaderRep?.id === 999;
+  const amILeader = sortedByRep[0]?.id === 999;
 
-  // Setup Screen
+  // SETUP
   if (gamePhase === 'SETUP') return (
       <div className="w-full max-w-md relative mt-10 text-center">
          <button onClick={onBack} className="absolute -top-10 left-0 text-white underline font-pixel text-xs">&lt; ATRÁS</button>
@@ -358,20 +343,42 @@ export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
       </div>
   );
 
-  // Game Over Screen (Igual que antes)
+  // GAME OVER (RESTAURADO)
   if (gamePhase === 'GAMEOVER') {
     const allP = [...bots, { id: 999, name: 'TÚ', reputation: myReputation, stash: myStash, stats: myStats, isDead: amIExpelled, isMe: true }];
     const richest = [...allP].sort((a,b) => b.stash - a.stash)[0];
+    const biggestThief = [...allP].sort((a,b) => b.stats.stole - a.stats.stole)[0];
+    const mostCollaborative = [...allP].sort((a,b) => b.stats.collaborated - a.stats.collaborated)[0];
     const ranking = [...allP].sort((a,b) => b.stash - a.stash);
     
     return (
       <div className="w-full max-w-md relative mt-8 animate-fade-in">
         <div className="border-4 border-danger p-4 bg-black shadow-2xl">
           <h2 className="text-center text-danger font-pixel text-2xl mb-2 animate-pulse">SOCIEDAD COLAPSADA</h2>
+          <p className="text-center text-white font-terminal mb-4">SOBREVIVISTE: {day} DÍAS</p>
+
+          <div className="grid grid-cols-3 gap-2 mb-6 text-center font-terminal text-xs">
+             <div className="bg-gray-900 p-2 border border-gold">
+                <p className="text-gold mb-1">💰 MAGNATE</p>
+                <p className="text-white font-bold">{richest.name}</p>
+                <p className="text-gold">${richest.stash}</p>
+             </div>
+             <div className="bg-gray-900 p-2 border border-red-500">
+                <p className="text-red-500 mb-1">🐀 LADRÓN</p>
+                <p className="text-white font-bold">{biggestThief.name}</p>
+                <p className="text-red-400">{biggestThief.stats.stole} Robos</p>
+             </div>
+             <div className="bg-gray-900 p-2 border border-farm-green">
+                <p className="text-farm-green mb-1">😇 SANTO</p>
+                <p className="text-white font-bold">{mostCollaborative.name}</p>
+                <p className="text-farm-green">{mostCollaborative.stats.collaborated} Aportes</p>
+             </div>
+          </div>
+
           <div className="h-64 overflow-y-auto border border-gray-700 custom-scrollbar mt-4">
              <table className="w-full font-terminal text-sm text-left">
                   <thead className="bg-danger text-black sticky top-0"><tr><th className="pl-2">#</th><th>NOMBRE</th><th className="text-right pr-2">$$$</th></tr></thead>
-                  <tbody>{ranking.map((p, i) => (<tr key={i} className="border-b border-gray-800 text-gray-300"><td className="pl-2">{i+1}</td><td>{p.name}</td><td className="text-right pr-2">{p.stash}</td></tr>))}</tbody>
+                  <tbody>{ranking.map((p, i) => (<tr key={i} className={`border-b border-gray-800 ${p.isMe ? 'text-gold' : 'text-gray-300'}`}><td className="pl-2">{i+1}</td><td>{p.name} {p.isDead && '💀'}</td><td className="text-right pr-2">{p.stash}</td></tr>))}</tbody>
              </table>
           </div>
           <button onClick={() => setGamePhase('SETUP')} className="mt-4 w-full bg-white text-black font-pixel py-3">REINICIAR</button>
@@ -385,81 +392,81 @@ export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
     <div className="w-full max-w-md relative mt-8">
       <button onClick={onBack} className="absolute -top-10 left-0 text-soil hover:text-white underline font-pixel text-xs">&lt; SALIR</button>
 
-      {/* 1. MODAL DE RESCATE (CUANDO ALGUIEN QUIEBRA Y TÚ DECIDES) */}
+      {/* MODAL 1: RESCATE */}
       {bailoutRequest && (
-        <div className="absolute inset-0 z-50 bg-black bg-opacity-95 flex flex-col items-center justify-center p-6 border-4 border-gold animate-bounce-in">
+        <div className="absolute inset-0 z-50 bg-black bg-opacity-95 flex flex-col items-center justify-center p-6 border-4 border-gold">
            <h3 className="text-gold font-pixel text-lg mb-2 text-center">SOLICITUD DE AYUDA</h3>
            <p className="text-white text-center mb-1 font-terminal">
              <span className="text-blue-400 font-bold">{bailoutRequest.targetName}</span> está en quiebra.
            </p>
-           <p className="text-danger mb-4 text-sm">Deuda: {Math.abs(bailoutRequest.debt)} + 10 (Sobrevivir)</p>
+           <p className="text-danger mb-4 text-sm">Deuda: {Math.abs(bailoutRequest.debt)} + 10</p>
            
            <div className="flex flex-col gap-3 w-full">
               {amILeader && (
-                  <button onClick={() => handleBailoutAction('PUBLIC_BAILOUT')} className="bg-farm-green text-black py-3 font-pixel text-xs hover:scale-105 border-b-4 border-green-900">
-                    🏛️ RESCATE PÚBLICO (Usa Silo)
+                  <button onClick={() => handleBailoutAction('PUBLIC_BAILOUT')} className="bg-farm-green text-black py-3 font-pixel text-xs border-b-4 border-green-900">
+                    🏛️ RESCATE PÚBLICO
                   </button>
               )}
-              
-              {/* Opción de Rescate Privado (Siempre disponible si tienes dinero) */}
-              <button 
-                 onClick={() => handleBailoutAction('PRIVATE_RESCUE')} 
-                 disabled={myStash < (Math.abs(bailoutRequest.debt) + 10)}
-                 className="bg-gold text-black py-3 font-pixel text-xs hover:scale-105 border-b-4 border-yellow-700 disabled:opacity-50"
-              >
-                 🤝 RESCATE PRIVADO (Pagas tú, +Rep)
+              <button onClick={() => handleBailoutAction('PRIVATE_RESCUE')} disabled={myStash < (Math.abs(bailoutRequest.debt) + 10)} className="bg-gold text-black py-3 font-pixel text-xs border-b-4 border-yellow-700 disabled:opacity-50">
+                 🤝 RESCATE PRIVADO (+REP)
               </button>
-
               {amILeader && (
-                  <button onClick={() => handleBailoutAction('EXPEL')} className="bg-danger text-white py-3 font-pixel text-xs hover:scale-105 border-b-4 border-red-900">
+                  <button onClick={() => handleBailoutAction('EXPEL')} className="bg-danger text-white py-3 font-pixel text-xs border-b-4 border-red-900">
                     💀 DENEGAR (Exiliar)
                   </button>
-              )}
-              
-              {!amILeader && (
-                 <p className="text-center text-gray-500 text-[10px]">No eres el líder moral, solo puedes ofrecer ayuda privada.</p>
               )}
            </div>
         </div>
       )}
 
-      {/* 2. MODAL DE VOTACIÓN (TRIBUNAL) */}
+      {/* MODAL 2: TRIBUNAL */}
       {voteSession && voteSession.isOpen && (
         <div className="absolute inset-0 z-50 bg-black bg-opacity-95 flex flex-col items-center justify-center p-6 border-4 border-gold">
            <h3 className="text-gold font-pixel text-xl mb-4 text-center">TRIBUNAL</h3>
            <p className="text-white text-center mb-4">{voteSession.accusedBy} acusa a <span className="text-danger font-bold">{voteSession.targetName}</span></p>
-           <div className="grid grid-cols-3 gap-2 w-full">
+           
+           <div className="grid grid-cols-2 gap-2 w-full mb-4">
               <button onClick={() => finalizeVote('YES')} className="bg-danger text-white py-2 font-pixel text-xs">CULPABLE</button>
-              <button onClick={() => finalizeVote('ABSTAIN')} className="bg-gray-600 text-white py-2 font-pixel text-xs">ABSTENER</button>
               <button onClick={() => finalizeVote('NO')} className="bg-blue-600 text-white py-2 font-pixel text-xs">INOCENTE</button>
+              <button onClick={() => finalizeVote('ABSTAIN')} className="bg-gray-600 text-white py-2 font-pixel text-xs col-span-2">ABSTENER</button>
+           </div>
+           
+           <div className="border-t border-gray-700 pt-4 w-full">
+              <button 
+                 onClick={payBailoutInTrial} 
+                 disabled={myStash < voteSession.bailCost}
+                 className="w-full bg-gold text-black font-pixel py-3 text-xs disabled:opacity-50 hover:scale-105"
+              >
+                 💸 PAGAR FIANZA (-{voteSession.bailCost})
+                 <br/><span className="text-[8px] opacity-70">Anula juicio / Ganas Reputación</span>
+              </button>
            </div>
         </div>
       )}
 
-      {/* 3. LISTA DE SOSPECHOSOS (CUANDO TÚ INICIAS JUICIO) */}
+      {/* MODAL 3: ELEGIR SOSPECHOSO */}
       {showSuspects && (
-         <div className="absolute inset-0 z-50 bg-black bg-opacity-95 p-6 border-4 border-farm-green">
-            <h3 className="text-farm-green font-pixel text-center mb-4">SELECCIONA ACUSADO</h3>
+         <div className="absolute inset-0 z-50 bg-black bg-opacity-95 p-6 border-4 border-gold">
+            <h3 className="text-gold font-pixel text-center mb-4">ELEGIR ACUSADO</h3>
             <div className="h-64 overflow-y-auto">
                {bots.filter(b => !b.isDead && b.reputation < 50).map(b => (
                   <button key={b.id} onClick={() => startVoteAgainst(b.id, b.name, 'TÚ')} className="w-full text-left p-2 border-b border-gray-700 hover:bg-gray-800 text-danger font-terminal">
                      {b.name} (Rep: {b.reputation}%)
                   </button>
                ))}
-               {bots.filter(b => !b.isDead && b.reputation < 50).length === 0 && <p className="text-center text-gray-500">Nadie tiene mala reputación hoy.</p>}
             </div>
             <button onClick={() => {setShowSuspects(false); setIsRunning(true);}} className="mt-4 w-full bg-gray-600 text-white py-2 font-pixel">CANCELAR</button>
          </div>
       )}
 
       <div className="border-4 border-soil p-4 bg-black shadow-2xl">
+        {/* HEADER */}
         <div className="flex justify-between items-center mb-4 border-b border-gray-700 pb-2">
           <p className="font-pixel text-xl text-white">DÍA {day}</p>
           <div className="text-right">
              <p className={`text-xs font-pixel ${amIExpelled ? 'text-danger' : 'text-green-400'}`}>
                {amIExpelled ? 'EXPULSADO' : myStash < 0 ? 'EN QUIEBRA' : 'ACTIVO'}
              </p>
-             {amITopRep && !amIExpelled && <p className="text-[10px] text-gold font-bold">👑 ERES JUEZ (TOP 3)</p>}
           </div>
         </div>
 
@@ -479,11 +486,14 @@ export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
             </div>
         </div>
 
-        {/* TABS */}
+        {/* TABS (CON LÍDER) */}
         <div className="flex border-b-2 border-soil mb-4 overflow-x-auto">
           {['ACTIONS', 'STATS', 'NEWS', 'RANKING'].map(tab => (
              <button key={tab} onClick={() => setActiveTab(tab as any)} className={`flex-1 font-pixel text-[10px] py-2 px-1 ${activeTab === tab ? 'bg-soil text-white' : 'text-gray-500'}`}>{tab}</button>
           ))}
+          {amITopRep && (
+             <button onClick={() => setActiveTab('LEADER')} className={`flex-1 font-pixel text-[10px] py-2 px-1 ${activeTab === 'LEADER' ? 'bg-gold text-black' : 'text-gold'}`}>LÍDER</button>
+          )}
         </div>
 
         {/* CONTENIDO TABS */}
@@ -495,8 +505,7 @@ export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
                  ) : myStash < 0 ? (
                     <div className="text-center">
                        <p className="text-danger font-bold mb-4">¡ESTÁS EN BANCARROTA!</p>
-                       <p className="text-xs text-gray-400 mb-4">Solicita ayuda pública o espera que un millonario te rescate.</p>
-                       <button onClick={() => { addNews("📢 Has pedido ayuda pública."); /* Lógica simulada */ }} className="bg-blue-600 text-white font-pixel py-3 px-6 hover:scale-105 animate-pulse">
+                       <button onClick={() => { addNews("📢 Solicitando rescate..."); }} className="bg-blue-600 text-white font-pixel py-3 px-6 hover:scale-105 animate-pulse">
                           🆘 PEDIR RESCATE
                        </button>
                     </div>
@@ -507,12 +516,6 @@ export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
                     </div>
                  ) : (
                     <>
-                      {amITopRep && (
-                         <button onClick={() => { setIsRunning(false); setShowSuspects(true); }} className="bg-purple-800 text-white font-pixel py-2 mb-2 border border-purple-500 hover:bg-purple-700">
-                            ⚖️ INICIAR JUICIO
-                         </button>
-                      )}
-
                       <button onClick={() => handleAction('COLLABORATE')} className="bg-farm-green text-black font-pixel py-3 hover:scale-105 text-left px-4 group relative">
                         <div className="relative z-10 flex justify-between items-center w-full">
                            <span className="text-sm">🤝 COLABORAR</span><span className="text-[10px] bg-black text-white px-2 py-1 rounded">+REP</span>
@@ -536,6 +539,19 @@ export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
                     </>
                  )}
               </div>
+            )}
+
+            {/* TAB DE LÍDER */}
+            {activeTab === 'LEADER' && amITopRep && (
+               <div className="flex flex-col gap-4 p-4 items-center justify-center h-full border border-gold bg-gray-900">
+                  <h3 className="text-gold font-pixel text-center">FUNCIONES DE ÉLITE</h3>
+                  <p className="text-gray-400 text-center font-terminal text-xs">Como líder moral (Top 3 Rep), tienes autoridad especial.</p>
+                  
+                  <button onClick={() => { setIsRunning(false); setShowSuspects(true); }} className="w-full bg-purple-800 text-white font-pixel py-4 border-2 border-purple-500 hover:scale-105 shadow-[0_0_15px_rgba(128,0,128,0.5)]">
+                     ⚖️ INICIAR JUICIO
+                     <br/><span className="text-[10px] opacity-70 font-terminal">Acusar a ciudadanos sospechosos</span>
+                  </button>
+               </div>
             )}
 
             {activeTab === 'STATS' && (
