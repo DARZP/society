@@ -22,7 +22,7 @@ interface VoteSession {
   targetName: string;
   accusedBy: string;
   isOpen: boolean;
-  bailCost: number; // Costo para anular el juicio
+  bailCost: number;
 }
 
 interface BailoutRequest {
@@ -36,6 +36,7 @@ export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
   // --- FASES ---
   const [gamePhase, setGamePhase] = useState<'SETUP' | 'PLAYING' | 'GAMEOVER'>('SETUP');
   const [botCount, setBotCount] = useState(50);
+  const [initialPop, setInitialPop] = useState(50); // Para calcular el 50%
   
   // --- MUNDO ---
   const [day, setDay] = useState(1);
@@ -49,7 +50,6 @@ export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
   
   // --- UI & SISTEMAS ---
   const [hasActed, setHasActed] = useState(false);
-  // AÑADIDO: 'LEADER' tab
   const [activeTab, setActiveTab] = useState<'ACTIONS' | 'RANKING' | 'STATS' | 'NEWS' | 'LEADER'>('ACTIONS');
   const [newsLog, setNewsLog] = useState<string[]>([]);
   
@@ -64,20 +64,25 @@ export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
   const [speed, setSpeed] = useState(2000);
 
   // Refs
-  const stateRef = useRef({ bots, myReputation, myStash, publicSilo, hasActed, amIExpelled, gamePhase });
+  const stateRef = useRef({ bots, myReputation, myStash, publicSilo, hasActed, amIExpelled, gamePhase, initialPop });
   useEffect(() => {
-    stateRef.current = { bots, myReputation, myStash, publicSilo, hasActed, amIExpelled, gamePhase };
-  }, [bots, myReputation, myStash, publicSilo, hasActed, amIExpelled, gamePhase]);
+    stateRef.current = { bots, myReputation, myStash, publicSilo, hasActed, amIExpelled, gamePhase, initialPop };
+  }, [bots, myReputation, myStash, publicSilo, hasActed, amIExpelled, gamePhase, initialPop]);
 
   // --- CÁLCULOS ---
-  const activePopulation = bots.filter(b => !b.isDead).length + (amIExpelled ? 0 : 1);
-  const inflationThreshold = activePopulation * 10;
+  const activeBots = bots.filter(b => !b.isDead);
+  const activePopulation = activeBots.length + (amIExpelled ? 0 : 1);
+  
+  // Inflación ajustada: Se dispara solo si hay escasez real per cápita
+  const inflationThreshold = activePopulation * 20; 
   const inflation = Math.max(1, inflationThreshold / (publicSilo + 1)).toFixed(2);
   const costOfLiving = Math.floor(5 * parseFloat(inflation));
 
   // GINI
-  const activeBots = bots.filter(b => !b.isDead);
   const totalPrivateWealth = activeBots.reduce((acc, bot) => acc + bot.stash, 0) + (amIExpelled ? 0 : myStash);
+  const totalResources = publicSilo + totalPrivateWealth;
+  const publicRatio = ((publicSilo / (totalResources || 1)) * 100).toFixed(1);
+  
   const allStashes = [...activeBots.map(b => b.stash), (amIExpelled ? 0 : myStash)].sort((a, b) => b - a);
   const top10Count = Math.ceil(allStashes.length * 0.1);
   const wealthTop10 = allStashes.slice(0, top10Count).reduce((a, b) => a + b, 0);
@@ -96,7 +101,9 @@ export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
       isDead: false
     }));
     setBots(newBots);
-    setPublicSilo(botCount * 50); 
+    // ESCALADO: 100 unidades por cabeza para aguantar más
+    setPublicSilo(botCount * 100); 
+    setInitialPop(botCount + 1); // +1 eres tú
     setGamePhase('PLAYING');
     setDay(1);
     setMyStats({ stole: 0, collaborated: 0, private: 0, rescued: 0 });
@@ -112,7 +119,6 @@ export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
   const startVoteAgainst = (targetId: number, targetName: string, accuser: string) => {
       setIsRunning(false);
       setShowSuspects(false);
-      // El costo de la fianza es 50 monedas fijas por ahora
       setVoteSession({ targetId, targetName, accusedBy: accuser, isOpen: true, bailCost: 50 });
       addNews(`⚖️ JUICIO INICIADO: ${accuser} acusa a ${targetName}.`);
   };
@@ -120,11 +126,10 @@ export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
   const payBailoutInTrial = () => {
     if (!voteSession) return;
     const cost = voteSession.bailCost;
-    
     if (myStash >= cost) {
       setMyStash(s => s - cost);
-      setMyReputation(r => Math.min(100, r + 10)); // Subes reputación por "benevolente"
-      addNews(`💸 FIANZA PAGADA: TÚ anulaste el juicio de ${voteSession.targetName}.`);
+      setMyReputation(r => Math.min(100, r + 10));
+      addNews(`💸 FIANZA: Salvaste a ${voteSession.targetName} del juicio.`);
       setVoteSession(null);
       setIsRunning(true);
     }
@@ -148,7 +153,7 @@ export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
         setAmIExpelled(true);
         confiscated = Math.max(0, stateRef.current.myStash);
         setMyStash(0);
-        addNews(`🛑 VEREDICTO: CULPABLE. Has sido EXPULSADO. Confiscado: ${confiscated}.`);
+        addNews(`🛑 EXPULSADO. Bienes confiscados: ${confiscated}.`);
       } else {
         setBots(prev => prev.map(b => {
           if (b.id === voteSession.targetId) {
@@ -157,11 +162,11 @@ export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
           }
           return b;
         }));
-        addNews(`🔨 VEREDICTO: ${voteSession.targetName} fue EXPULSADO. Se incautaron ${confiscated}.`);
+        addNews(`🔨 ${voteSession.targetName} expulsado. Se incautaron ${confiscated}.`);
       }
       setPublicSilo(s => s + confiscated);
     } else {
-      addNews(`🛡️ VEREDICTO: ${voteSession.targetName} declarado INOCENTE (${yes} votos vs ${no}).`);
+      addNews(`🛡️ ${voteSession.targetName} declarado INOCENTE.`);
     }
     setVoteSession(null);
     setIsRunning(true);
@@ -175,16 +180,16 @@ export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
 
     if (action === 'PUBLIC_BAILOUT') {
       setPublicSilo(s => s - cost);
-      addNews(`🏛️ Rescate PÚBLICO aprobado para ${targetName}.`);
+      addNews(`🏛️ Rescate PÚBLICO para ${targetName}.`);
       resolveBailout(targetId, 10);
     } else if (action === 'PRIVATE_RESCUE') {
       setMyStash(s => s - cost);
-      setMyReputation(r => Math.min(100, r + 15));
+      setMyReputation(r => Math.min(100, r + 20)); // Mucha reputación
       setMyStats(s => ({ ...s, rescued: s.rescued + 1 }));
-      addNews(`🤝 TÚ rescataste a ${targetName} con fondos privados.`);
+      addNews(`🤝 TÚ rescataste a ${targetName} con tu dinero.`);
       resolveBailout(targetId, 10);
     } else {
-      addNews(`💀 Se negó ayuda a ${targetName}. Exiliado por deudas.`);
+      addNews(`💀 ${targetName} ha muerto por inanición (Exiliado).`);
       resolveBailout(targetId, -1);
     }
     setBailoutRequest(null);
@@ -225,33 +230,20 @@ export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
         setDay(d => d + 1);
         setHasActed(false);
 
-        // 2. QUIEBRAS
+        // 2. QUIEBRAS (PAUSA PARA RESCATES)
         let bankruptcyStop = false;
-        const allActive = [...currentData.bots.filter(b => !b.isDead), { id: 999, name:'TÚ', reputation: currentData.myReputation, isDead: currentData.amIExpelled, stash: currentData.myStash }];
-        const leaderRep = allActive.sort((a,b) => b.reputation - a.reputation)[0];
-        const iAmLeader = leaderRep.id === 999;
-
+        
+        // Comprobamos bots
         setBots(currentBots => currentBots.map(bot => {
           if (bot.isDead) return bot;
           let newStash = bot.stash - costOfLiving;
           
           if (newStash < 0 && !bankruptcyStop) {
-             if (iAmLeader) {
-                bankruptcyStop = true;
-                setIsRunning(false);
-                setBailoutRequest({ targetId: bot.id, targetName: bot.name, debt: newStash, reputation: bot.reputation });
-             } else {
-                // IA decide
-                const richestBot = currentBots.sort((a,b) => b.stash - a.stash)[0];
-                if (richestBot.stash > Math.abs(newStash) + 50 && richestBot.reputation < 50) {
-                   newStash = 10; // Rescate privado IA
-                } else if (currentData.publicSilo > 500 && bot.reputation > 30) {
-                   newStash = 10;
-                   setPublicSilo(s => s - (Math.abs(newStash) + 10));
-                } else {
-                   return { ...bot, isDead: true, stash: 0 }; 
-                }
-             }
+             // ¡ALGUIEN QUEBRÓ!
+             // Pausamos y mostramos modal a TODOS (al jugador)
+             bankruptcyStop = true;
+             setIsRunning(false);
+             setBailoutRequest({ targetId: bot.id, targetName: bot.name, debt: newStash, reputation: bot.reputation });
           }
 
           let currentStats = { ...bot.stats };
@@ -282,13 +274,18 @@ export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
           return { ...bot, reputation: Math.max(0, Math.min(100, newRep)), stash: newStash, stats: currentStats };
         }));
 
+        // 3. CONDICIÓN DE COLAPSO: 50% MUERTO
         setPublicSilo(prev => {
-          if (prev <= 0) {
-            setIsRunning(false);
-            setGamePhase('GAMEOVER');
-            return 0;
-          }
-          return prev;
+           let val = Math.max(0, prev);
+           // Verificamos población viva
+           const aliveCount = currentData.bots.filter(b => !b.isDead).length + (currentData.amIExpelled ? 0 : 1);
+           
+           if (aliveCount < (currentData.initialPop / 2)) {
+              setIsRunning(false);
+              setGamePhase('GAMEOVER');
+           }
+           
+           return val;
         });
 
       }, speed);
@@ -299,7 +296,7 @@ export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
 
   // --- ACCIONES MANUALES ---
   const handleAction = (type: 'COLLABORATE' | 'PRIVATE' | 'STEAL') => {
-    if (publicSilo <= 0 || hasActed || amIExpelled || myStash < 0) return;
+    if (hasActed || amIExpelled || myStash < 0) return;
 
     switch (type) {
       case 'COLLABORATE':
@@ -323,11 +320,10 @@ export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
   };
 
   // --- UI PREPS ---
-  const activePlayers = [...bots.filter(b => !b.isDead), { id: 999, name: 'TÚ', reputation: myReputation, isDead: amIExpelled }];
-  const sortedByRep = [...activePlayers].sort((a,b) => b.reputation - a.reputation);
+  const activePlayersList = [...bots.filter(b => !b.isDead), { id: 999, name: 'TÚ', reputation: myReputation, isDead: amIExpelled }];
+  const sortedByRep = [...activePlayersList].sort((a,b) => b.reputation - a.reputation);
   const top3Rep = sortedByRep.slice(0, 3);
   const amITopRep = top3Rep.some(p => p.id === 999);
-  const amILeader = sortedByRep[0]?.id === 999;
 
   // SETUP
   if (gamePhase === 'SETUP') return (
@@ -343,7 +339,7 @@ export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
       </div>
   );
 
-  // GAME OVER (RESTAURADO)
+  // GAME OVER
   if (gamePhase === 'GAMEOVER') {
     const allP = [...bots, { id: 999, name: 'TÚ', reputation: myReputation, stash: myStash, stats: myStats, isDead: amIExpelled, isMe: true }];
     const richest = [...allP].sort((a,b) => b.stash - a.stash)[0];
@@ -354,8 +350,9 @@ export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
     return (
       <div className="w-full max-w-md relative mt-8 animate-fade-in">
         <div className="border-4 border-danger p-4 bg-black shadow-2xl">
-          <h2 className="text-center text-danger font-pixel text-2xl mb-2 animate-pulse">SOCIEDAD COLAPSADA</h2>
+          <h2 className="text-center text-danger font-pixel text-2xl mb-2 animate-pulse">SOCIEDAD FALLIDA</h2>
           <p className="text-center text-white font-terminal mb-4">SOBREVIVISTE: {day} DÍAS</p>
+          <p className="text-center text-xs text-gray-500 mb-4">La población cayó por debajo del 50%.</p>
 
           <div className="grid grid-cols-3 gap-2 mb-6 text-center font-terminal text-xs">
              <div className="bg-gray-900 p-2 border border-gold">
@@ -392,30 +389,38 @@ export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
     <div className="w-full max-w-md relative mt-8">
       <button onClick={onBack} className="absolute -top-10 left-0 text-soil hover:text-white underline font-pixel text-xs">&lt; SALIR</button>
 
-      {/* MODAL 1: RESCATE */}
+      {/* MODAL 1: RESCATE (A TODOS LES SALE) */}
       {bailoutRequest && (
         <div className="absolute inset-0 z-50 bg-black bg-opacity-95 flex flex-col items-center justify-center p-6 border-4 border-gold">
-           <h3 className="text-gold font-pixel text-lg mb-2 text-center">SOLICITUD DE AYUDA</h3>
+           <h3 className="text-gold font-pixel text-lg mb-2 text-center">ALERTA DE QUIEBRA</h3>
            <p className="text-white text-center mb-1 font-terminal">
-             <span className="text-blue-400 font-bold">{bailoutRequest.targetName}</span> está en quiebra.
+             <span className="text-blue-400 font-bold">{bailoutRequest.targetName}</span> no puede pagar el costo de vida.
            </p>
            <p className="text-danger mb-4 text-sm">Deuda: {Math.abs(bailoutRequest.debt)} + 10</p>
            
            <div className="flex flex-col gap-3 w-full">
-              {amILeader && (
+              {/* SOLO TOP 3 PUEDE USAR FONDOS PÚBLICOS */}
+              {amITopRep && (
                   <button onClick={() => handleBailoutAction('PUBLIC_BAILOUT')} className="bg-farm-green text-black py-3 font-pixel text-xs border-b-4 border-green-900">
-                    🏛️ RESCATE PÚBLICO
+                    🏛️ RESCATE PÚBLICO (Eres Líder)
                   </button>
               )}
-              <button onClick={() => handleBailoutAction('PRIVATE_RESCUE')} disabled={myStash < (Math.abs(bailoutRequest.debt) + 10)} className="bg-gold text-black py-3 font-pixel text-xs border-b-4 border-yellow-700 disabled:opacity-50">
-                 🤝 RESCATE PRIVADO (+REP)
+              
+              {/* TODOS PUEDEN USAR PRIVADO */}
+              <button 
+                 onClick={() => handleBailoutAction('PRIVATE_RESCUE')} 
+                 disabled={myStash < (Math.abs(bailoutRequest.debt) + 10)}
+                 className="bg-gold text-black py-3 font-pixel text-xs border-b-4 border-yellow-700 disabled:opacity-50"
+              >
+                 🤝 RESCATE PRIVADO (Ganas mucha Rep)
               </button>
-              {amILeader && (
-                  <button onClick={() => handleBailoutAction('EXPEL')} className="bg-danger text-white py-3 font-pixel text-xs border-b-4 border-red-900">
-                    💀 DENEGAR (Exiliar)
-                  </button>
-              )}
+
+              <button onClick={() => handleBailoutAction('EXPEL')} className="bg-gray-700 text-white py-3 font-pixel text-xs border-b-4 border-gray-900">
+                💀 IGNORAR (Morirá)
+              </button>
            </div>
+           
+           {!amITopRep && <p className="text-[10px] text-gray-500 mt-4 text-center">Solo los líderes (Top 3 Rep) pueden usar fondos públicos.</p>}
         </div>
       )}
 
@@ -424,21 +429,15 @@ export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
         <div className="absolute inset-0 z-50 bg-black bg-opacity-95 flex flex-col items-center justify-center p-6 border-4 border-gold">
            <h3 className="text-gold font-pixel text-xl mb-4 text-center">TRIBUNAL</h3>
            <p className="text-white text-center mb-4">{voteSession.accusedBy} acusa a <span className="text-danger font-bold">{voteSession.targetName}</span></p>
-           
            <div className="grid grid-cols-2 gap-2 w-full mb-4">
               <button onClick={() => finalizeVote('YES')} className="bg-danger text-white py-2 font-pixel text-xs">CULPABLE</button>
               <button onClick={() => finalizeVote('NO')} className="bg-blue-600 text-white py-2 font-pixel text-xs">INOCENTE</button>
               <button onClick={() => finalizeVote('ABSTAIN')} className="bg-gray-600 text-white py-2 font-pixel text-xs col-span-2">ABSTENER</button>
            </div>
-           
            <div className="border-t border-gray-700 pt-4 w-full">
-              <button 
-                 onClick={payBailoutInTrial} 
-                 disabled={myStash < voteSession.bailCost}
-                 className="w-full bg-gold text-black font-pixel py-3 text-xs disabled:opacity-50 hover:scale-105"
-              >
+              <button onClick={payBailoutInTrial} disabled={myStash < voteSession.bailCost} className="w-full bg-gold text-black font-pixel py-3 text-xs disabled:opacity-50 hover:scale-105">
                  💸 PAGAR FIANZA (-{voteSession.bailCost})
-                 <br/><span className="text-[8px] opacity-70">Anula juicio / Ganas Reputación</span>
+                 <br/><span className="text-[8px] opacity-70">Salva al acusado / Ganas Reputación</span>
               </button>
            </div>
         </div>
@@ -467,6 +466,7 @@ export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
              <p className={`text-xs font-pixel ${amIExpelled ? 'text-danger' : 'text-green-400'}`}>
                {amIExpelled ? 'EXPULSADO' : myStash < 0 ? 'EN QUIEBRA' : 'ACTIVO'}
              </p>
+             <p className="text-[10px] text-gray-400">Población: {activePopulation}/{botCount+1}</p>
           </div>
         </div>
 
@@ -486,7 +486,7 @@ export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
             </div>
         </div>
 
-        {/* TABS (CON LÍDER) */}
+        {/* TABS */}
         <div className="flex border-b-2 border-soil mb-4 overflow-x-auto">
           {['ACTIONS', 'STATS', 'NEWS', 'RANKING'].map(tab => (
              <button key={tab} onClick={() => setActiveTab(tab as any)} className={`flex-1 font-pixel text-[10px] py-2 px-1 ${activeTab === tab ? 'bg-soil text-white' : 'text-gray-500'}`}>{tab}</button>
@@ -506,7 +506,7 @@ export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
                     <div className="text-center">
                        <p className="text-danger font-bold mb-4">¡ESTÁS EN BANCARROTA!</p>
                        <button onClick={() => { addNews("📢 Solicitando rescate..."); }} className="bg-blue-600 text-white font-pixel py-3 px-6 hover:scale-105 animate-pulse">
-                          🆘 PEDIR RESCATE
+                          🆘 PEDIR AYUDA
                        </button>
                     </div>
                  ) : hasActed ? (
@@ -541,15 +541,11 @@ export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
               </div>
             )}
 
-            {/* TAB DE LÍDER */}
             {activeTab === 'LEADER' && amITopRep && (
                <div className="flex flex-col gap-4 p-4 items-center justify-center h-full border border-gold bg-gray-900">
                   <h3 className="text-gold font-pixel text-center">FUNCIONES DE ÉLITE</h3>
-                  <p className="text-gray-400 text-center font-terminal text-xs">Como líder moral (Top 3 Rep), tienes autoridad especial.</p>
-                  
                   <button onClick={() => { setIsRunning(false); setShowSuspects(true); }} className="w-full bg-purple-800 text-white font-pixel py-4 border-2 border-purple-500 hover:scale-105 shadow-[0_0_15px_rgba(128,0,128,0.5)]">
                      ⚖️ INICIAR JUICIO
-                     <br/><span className="text-[10px] opacity-70 font-terminal">Acusar a ciudadanos sospechosos</span>
                   </button>
                </div>
             )}
