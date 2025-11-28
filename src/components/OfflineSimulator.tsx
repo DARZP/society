@@ -1,6 +1,20 @@
 import { useState, useEffect, useRef } from 'react';
 
+// --- GENERADOR DE NOMBRES ---
+const generateName = () => {
+  const prefixes = ["xX_", "The", "Dr", "Lord", "Captain", "iAm", "El_", "La_", ""];
+  const bases = ["Slayer", "Juan", "Maria", "Gamer", "Noob", "King", "Wolf", "Ana", "Dev", "Ghost", "Kevin", "Pro", "Hacker", "Panda"];
+  const suffixes = ["_Xx", "123", "99", "_YT", "HD", "69", "007", "", ""];
+  
+  const p = prefixes[Math.floor(Math.random() * prefixes.length)];
+  const b = bases[Math.floor(Math.random() * bases.length)];
+  const s = suffixes[Math.floor(Math.random() * suffixes.length)];
+  return `${p}${b}${s}`;
+};
+
 // --- TIPOS ---
+type Personality = 'ALTRUIST' | 'GREEDY' | 'CHAOTIC' | 'OPPORTUNIST';
+
 interface PlayerStats {
   stole: number;
   collaborated: number;
@@ -12,6 +26,7 @@ interface PlayerStats {
 interface BotPlayer {
   id: number;
   name: string;
+  personality: Personality; // NUEVO
   reputation: number;
   stash: number;
   stats: PlayerStats;
@@ -87,14 +102,12 @@ export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
   const totalPrivateWealth = activeBots.reduce((acc, bot) => acc + bot.stash, 0) + (amIExpelled ? 0 : myStash);
   const currentTotalWealth = publicSilo + totalPrivateWealth;
   
-  // FIX: Inflación Logarítmica (Crece más lento)
   const growthFactor = Math.max(1, currentTotalWealth / (initialTotalWealth || 1));
-  const monetaryInflation = 1 + Math.log10(growthFactor); // Logarítmico para evitar explosión
+  const monetaryInflation = 1 + Math.log10(growthFactor);
 
   const safeSiloLevel = activePopulation * 50; 
   const scarcityInflation = Math.max(1, safeSiloLevel / (publicSilo + 1));
   
-  // Costo Base: 5. Máximo Teórico "sano": ~15-20.
   const rawCost = 5 * (monetaryInflation + scarcityInflation - 0.8);
   const costOfLiving = Math.floor(Math.max(5, rawCost)); 
 
@@ -125,16 +138,26 @@ export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
   // --- INICIO ---
   const startGame = () => {
     const siloStart = botCount * 100;
-    const newBots: BotPlayer[] = Array.from({ length: botCount }).map((_, i) => ({
-      id: i,
-      name: `Ciudadano #${i + 1}`,
-      reputation: Math.floor(Math.random() * 40) + 40,
-      stash: Math.floor(Math.random() * 40) + 30, // FIX: Más dinero inicial (30-70)
-      stats: { stole: 0, collaborated: 0, private: 0, rescued: 0, donated: 0 },
-      isDead: false,
-      isBankrupt: false,
-      daysBankrupt: 0
-    }));
+    const newBots: BotPlayer[] = Array.from({ length: botCount }).map((_, i) => {
+      // ASIGNACIÓN DE PERSONALIDAD
+      const rand = Math.random();
+      let p: Personality = 'OPPORTUNIST';
+      if (rand < 0.2) p = 'ALTRUIST'; // 20% Buenos
+      else if (rand < 0.4) p = 'GREEDY'; // 20% Malos
+      else if (rand < 0.5) p = 'CHAOTIC'; // 10% Locos
+      
+      return {
+        id: i,
+        name: generateName(),
+        personality: p,
+        reputation: Math.floor(Math.random() * 30) + 40, // 40-70 inicial
+        stash: Math.floor(Math.random() * 40) + 30, 
+        stats: { stole: 0, collaborated: 0, private: 0, rescued: 0, donated: 0 },
+        isDead: false,
+        isBankrupt: false,
+        daysBankrupt: 0
+      };
+    });
 
     const playerStartStash = 60;
     const totalStart = siloStart + (newBots.reduce((a,b)=>a+b.stash,0)) + playerStartStash;
@@ -151,7 +174,7 @@ export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
     setAmIExpelled(false);
     setAmIBankrupt(false);
     setMyDaysBankrupt(0);
-    setNewsLog([{ id: 1, text: "Bienvenido. Cuida la inflación.", type: 'INFO' }]);
+    setNewsLog([{ id: 1, text: "Bienvenido. Tu reputación decae diariamente.", type: 'INFO' }]);
     setIsRunning(false);
     setHasActed(false);
   };
@@ -285,29 +308,27 @@ export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
       interval = setInterval(() => {
         const currentData = stateRef.current;
         
-        // 1. AUTO-COLABORACIÓN / COBRO
+        // 1. DESGASTE POLÍTICO (DECAY) - Todos pierden fama
+        setMyReputation(r => Math.max(0, r - 2)); 
+        setBots(prev => prev.map(b => ({ ...b, reputation: Math.max(0, b.reputation - 2) })));
+
+        // 2. AUTO-COLABORACIÓN
         if (!currentData.amIExpelled && !currentData.amIBankrupt) {
             if (!currentData.hasActed) {
-                // Auto: Gana 10, paga Costo.
                 setPublicSilo(s => s + 25);
                 setMyStash(s => s + 10 - costOfLiving);
                 setMyStats(s => ({ ...s, collaborated: s.collaborated + 1 }));
+                setMyReputation(r => Math.min(100, r + 6)); // +4 neto tras decay
             } else {
                 setMyStash(prev => prev - costOfLiving);
             }
         }
 
-        // 2. CHECK JUGADOR
-        if (!currentData.amIBankrupt && !currentData.amIExpelled) {
-            setMyStash(currentStash => {
-                if (currentStash < 0) {
-                    setAmIBankrupt(true);
-                    setMyDaysBankrupt(0);
-                    addNews("¡ESTÁS EN QUIEBRA! Tienes 5 días.", 'BANKRUPTCY_ALERT', { id: 999, name: 'TÚ', debt: currentStash });
-                    return currentStash;
-                }
-                return currentStash;
-            });
+        // 3. CHECK JUGADOR
+        if (!currentData.amIBankrupt && currentData.myStash < 0 && !currentData.amIExpelled) {
+            setAmIBankrupt(true);
+            setMyDaysBankrupt(0);
+            addNews("¡ESTÁS EN QUIEBRA! Revisa NOTICIAS.", 'BANKRUPTCY_ALERT', { id: 999, name: 'TÚ', debt: currentData.myStash });
         } else if (currentData.amIBankrupt) {
             setMyDaysBankrupt(days => {
                 if (days >= 5) {
@@ -322,18 +343,16 @@ export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
         setDay(d => d + 1);
         setHasActed(false);
 
-        // --- IA INTELIGENTE Y SUPERVIVENCIA ---
+        // --- IA INTELIGENTE ---
         const activeList = [...currentData.bots.filter(b => !b.isDead), { id: 999, name: 'TÚ', reputation: currentData.myReputation, isDead: currentData.amIExpelled }];
         const topRep = activeList.sort((a,b) => b.reputation - a.reputation)[0];
         
-        // IA EXPROPIACIÓN
         if (topRep && topRep.id !== 999 && currentData.publicSilo < (activePopulation * 10)) {
            if (Math.random() < 0.3) executeExpropriation(true, "Líder Bot");
         }
 
-        // IA JUICIOS
         const top3Bots = currentData.bots.filter(b => !b.isDead).sort((a,b) => b.reputation - a.reputation).slice(0, 3);
-        if (top3Bots.length > 0 && Math.random() < 0.1) { 
+        if (top3Bots.length > 0 && Math.random() < 0.15) { 
            const judge = top3Bots[Math.floor(Math.random() * top3Bots.length)];
            const criminals = currentData.bots.filter(b => !b.isDead && b.reputation < 30 && b.id !== judge.id);
            if (criminals.length > 0) {
@@ -342,12 +361,11 @@ export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
            }
         }
 
-        // IA SUPERVIVENCIA INDIVIDUAL
+        // --- BOTS: PERSONALIDAD & SUPERVIVENCIA ---
         setBots(currentBots => currentBots.map(bot => {
           if (bot.isDead) return bot;
           
           if (bot.isBankrupt) {
-             // Intento de auto-rescate de otros
              const richBots = currentBots.filter(b => !b.isDead && !b.isBankrupt && b.stash > 300);
              if (richBots.length > 0 && Math.random() < 0.2) {
                  const savior = richBots[0];
@@ -357,6 +375,7 @@ export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
                     bot.isBankrupt = false;
                     bot.daysBankrupt = 0;
                     savior.stash -= debt;
+                    savior.reputation = Math.min(100, savior.reputation + 20); // Gana Rep
                     addNews(`🤝 ${savior.name} rescató a ${bot.name}.`);
                     return bot; 
                  }
@@ -376,50 +395,51 @@ export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
           }
 
           let currentStats = { ...bot.stats };
-          let newRep = bot.reputation;
+          let newRep = bot.reputation; // Ya perdió 2 al inicio del ciclo
           
-          // CEREBRO DE SUPERVIVENCIA MEJORADO
-          const nextDaySurvive = newStash > costOfLiving;
+          const financialStress = costOfLiving / (Math.max(1, bot.stash)); 
+          const socialPanic = 1 - Math.min(1, currentData.publicSilo / (activePopulation * 50)); 
           const roll = Math.random();
           
           let decision = 'PRIVATE';
 
-          // FIX: SI NO TENGO PARA COMER MAÑANA, ROBO O TRABAJO PRIVADO SIEMPRE
-          if (!nextDaySurvive) {
-             // Desesperación total
-             if (roll < 0.9) decision = 'STEAL'; // 90% Robar
-             else decision = 'PRIVATE';
-          } 
-          else if (newStash < (costOfLiving * 3)) {
-             // Precaución: Ahorrar
-             decision = 'PRIVATE';
-          }
-          else {
-             // Si estoy bien, colaboro si soy bueno
-             if (bot.reputation > 50 && roll < 0.9) decision = 'COLLABORATE';
-             else if (roll < 0.5) decision = 'COLLABORATE';
-             else decision = 'PRIVATE';
+          // 1. FACTOR PERSONALIDAD
+          let biasSteal = 0;
+          let biasCollab = 0;
+
+          if (bot.personality === 'GREEDY') { biasSteal += 0.3; biasCollab -= 0.2; }
+          if (bot.personality === 'ALTRUIST') { biasCollab += 0.3; biasSteal -= 0.1; }
+          if (bot.personality === 'CHAOTIC' && roll < 0.3) {
+             // Caos puro
+             if (Math.random() > 0.5) decision = 'STEAL'; else decision = 'COLLABORATE';
+          } else {
+             // Lógica Standard + Personalidad
+             if (financialStress > 0.8) {
+                if (roll < (0.7 + biasSteal)) decision = 'STEAL'; else decision = 'PRIVATE';
+             } 
+             else if (socialPanic > 0.8) {
+                if (roll < (0.6 + biasSteal)) decision = 'PRIVATE'; else if (roll < 0.9) decision = 'STEAL'; else decision = 'COLLABORATE';
+             }
+             else {
+                // Tiempos normales
+                // Ajuste: Oportunistas colaboran si es rentable o para mantener reputación
+                // Altruistas colaboran casi siempre
+                if (roll < (0.5 + biasCollab)) decision = 'COLLABORATE'; else decision = 'PRIVATE';
+             }
           }
 
           if (decision === 'STEAL') {
-             newStash += 60; // FIX: Robar da +60 (Más rentable)
-             setPublicSilo(s => s - 40); 
-             newRep -= 3;
-             currentStats.stole += 1;
+             newStash += 60; setPublicSilo(s => s - 40); newRep -= 3; currentStats.stole += 1;
           } else if (decision === 'PRIVATE') {
-             newStash += 25; // FIX: Privado da +25 (Rentable)
-             currentStats.private += 1;
+             newStash += 25; currentStats.private += 1;
           } else {
-             setPublicSilo(s => s + 25); 
-             newRep += 1;
-             newStash += 10; 
-             currentStats.collaborated += 1;
+             setPublicSilo(s => s + 25); newRep += 6; // +4 neto tras decay
+             newStash += 10; currentStats.collaborated += 1;
           }
 
           return { ...bot, reputation: Math.max(0, Math.min(100, newRep)), stash: newStash, stats: currentStats };
         }));
 
-        // 4. COLAPSO
         setPublicSilo(prev => {
            let val = Math.max(0, prev);
            const aliveCount = currentData.bots.filter(b => !b.isDead).length + (currentData.amIExpelled ? 0 : 1);
@@ -442,35 +462,21 @@ export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
 
     switch (type) {
       case 'COLLABORATE':
-        setPublicSilo(s => s + 25);
-        setMyStash(s => s + 10); 
-        setMyReputation(r => Math.min(100, r + 5));
-        setMyStats(s => ({ ...s, collaborated: s.collaborated + 1 }));
-        break;
+        setPublicSilo(s => s + 25); setMyStash(s => s + 10); setMyReputation(r => Math.min(100, r + 6)); // +6 para compensar decay
+        setMyStats(s => ({ ...s, collaborated: s.collaborated + 1 })); break;
       case 'PRIVATE':
-        setMyStash(s => s + 25); // +25
-        setMyStats(s => ({ ...s, private: s.private + 1 }));
-        break;
+        setMyStash(s => s + 25); setMyStats(s => ({ ...s, private: s.private + 1 })); break;
       case 'STEAL':
-        setPublicSilo(s => s - 40);
-        setMyStash(s => s + 60); // +60
-        setMyReputation(r => Math.max(0, r - 10));
-        setMyStats(s => ({ ...s, stole: s.stole + 1 }));
-        break;
+        setPublicSilo(s => s - 40); setMyStash(s => s + 60); setMyReputation(r => Math.max(0, r - 10)); setMyStats(s => ({ ...s, stole: s.stole + 1 })); break;
     }
     setHasActed(true);
   };
 
   const donateToSilo = () => {
      if (myStash < 20 || hasActed) return;
-     setMyStash(s => s - 20);
-     setPublicSilo(s => s + 20);
-     setMyReputation(r => Math.min(100, r + 5));
-     setMyStats(s => ({...s, donated: s.donated + 20}));
-     setHasActed(true);
+     setMyStash(s => s - 20); setPublicSilo(s => s + 20); setMyReputation(r => Math.min(100, r + 6)); setMyStats(s => ({...s, donated: s.donated + 20})); setHasActed(true);
   };
 
-  // --- RENDER HELPERS ---
   const activePlayersList = [...bots.filter(b => !b.isDead), { id: 999, name: 'TÚ', reputation: myReputation, isDead: amIExpelled }];
   const sortedByRep = [...activePlayersList].sort((a,b) => b.reputation - a.reputation);
   const amITopRep = sortedByRep.slice(0, 3).some(p => p.id === 999);
@@ -496,7 +502,6 @@ export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
     const biggestThief = [...allP].sort((a,b) => b.stats.stole - a.stats.stole)[0];
     const mostCollaborative = [...allP].sort((a,b) => b.stats.collaborated - a.stats.collaborated)[0];
     
-    // FIX: ORDENAMIENTO DINÁMICO
     const sortedList = [...allP].sort((a, b) => {
        if (gameOverSort === 'WEALTH') return b.stash - a.stash;
        if (gameOverSort === 'THEFT') return b.stats.stole - a.stats.stole;
@@ -504,7 +509,6 @@ export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
        return 0;
     });
 
-    // FIX: HEADER DINÁMICO
     const getColumnHeader = () => {
         if (gameOverSort === 'WEALTH') return 'DINERO ($)';
         if (gameOverSort === 'THEFT') return 'ROBOS (#)';
@@ -534,7 +538,7 @@ export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
     <div className="w-full max-w-md relative mt-8 h-[36rem]">
       <button onClick={onBack} className="absolute -top-10 left-0 text-soil hover:text-white underline font-pixel text-xs">&lt; SALIR</button>
 
-      {/* MODAL RESCATE (DESDE NEWS) */}
+      {/* MODALES */}
       {activeBailout && (
         <div className="absolute inset-0 z-50 bg-black bg-opacity-95 flex flex-col items-center justify-center p-6 border-4 border-gold">
            <h3 className="text-gold font-pixel text-lg mb-2 text-center">RESCATE</h3>
@@ -547,7 +551,6 @@ export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
         </div>
       )}
 
-      {/* MODAL JUICIO */}
       {voteSession && voteSession.isOpen && (
         <div className="absolute inset-0 z-50 bg-black bg-opacity-95 flex flex-col items-center justify-center p-6 border-4 border-gold">
            <h3 className="text-gold font-pixel text-xl mb-4 text-center">TRIBUNAL</h3>
@@ -566,7 +569,7 @@ export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
             <h3 className="text-gold font-pixel text-center mb-4">ACUSAR</h3>
             <div className="h-64 overflow-y-auto">
                {bots.filter(b => !b.isDead && b.reputation < 60).map(b => (
-                  <button key={b.id} onClick={() => startVoteAgainst(b.id, b.name, b.reputation, 'TÚ')} className="w-full text-left p-2 border-b border-gray-700 hover:bg-gray-800 text-danger font-terminal">{b.name} (Rep: {b.reputation}%)</button>
+                  <button key={b.id} onClick={() => startVoteAgainst(b.id, b.name, b.reputation, 'TÚ')} className="w-full text-left p-2 border-b border-gray-700 hover:bg-gray-800 text-danger font-terminal">{b.name} (Rep: {b.reputation}Pts)</button>
                ))}
             </div>
             <button onClick={() => {setShowSuspects(false); setIsRunning(true);}} className="mt-4 w-full bg-gray-600 text-white py-2 font-pixel">CANCELAR</button>
@@ -612,9 +615,9 @@ export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
                  ) : (
                     <>
                       <button onClick={donateToSilo} className="bg-blue-800 text-white font-pixel py-2 hover:scale-105 mb-2 border border-blue-500">🤝 DONAR AL PUEBLO (-20$)</button>
-                      <button onClick={() => handleAction('COLLABORATE')} className="bg-farm-green text-black font-pixel py-3 hover:scale-105 text-left px-4 group relative"><div className="relative z-10 flex justify-between items-center w-full"><span className="text-sm">🔨 COLABORAR</span><span className="text-[10px] bg-black text-white px-2 py-1 rounded">+REP</span></div><div className="relative z-10 text-[10px] opacity-70 mt-1 font-terminal">+25 Silo / +10 Tú</div></button>
-                      <button onClick={() => handleAction('PRIVATE')} className="bg-yellow-600 text-black font-pixel py-3 hover:scale-105 text-left px-4 relative"><div className="relative z-10 flex justify-between items-center w-full"><span className="text-sm">🏠 PRIVADO</span><span className="text-[10px] bg-black text-white px-2 py-1 rounded">=REP</span></div><div className="relative z-10 text-[10px] opacity-70 mt-1 font-terminal">+0 Silo / +25 Tú</div></button>
-                      <button onClick={() => handleAction('STEAL')} className="bg-red-600 text-white font-pixel py-3 hover:scale-105 text-left px-4 group relative"><div className="relative z-10 flex justify-between items-center w-full"><span className="text-sm">😈 ROBAR</span><span className="text-[10px] bg-black text-white px-2 py-1 rounded">-REP</span></div><div className="relative z-10 text-[10px] opacity-80 mt-1 font-terminal">-40 Silo / +60 Tú</div></button>
+                      <button onClick={() => handleAction('COLLABORATE')} className="bg-farm-green text-black font-pixel py-3 hover:scale-105 text-left px-4 group relative"><div className="relative z-10 flex justify-between items-center w-full"><span className="text-sm">🔨 COLABORAR</span><span className="text-[10px] bg-black text-white px-2 py-1 rounded">+5 Pts</span></div><div className="relative z-10 text-[10px] opacity-70 mt-1 font-terminal">+25 Silo / +10 Tú</div></button>
+                      <button onClick={() => handleAction('PRIVATE')} className="bg-yellow-600 text-black font-pixel py-3 hover:scale-105 text-left px-4 relative"><div className="relative z-10 flex justify-between items-center w-full"><span className="text-sm">🏠 PRIVADO</span><span className="text-[10px] bg-black text-white px-2 py-1 rounded">-2 Pts</span></div><div className="relative z-10 text-[10px] opacity-70 mt-1 font-terminal">+0 Silo / +25 Tú</div></button>
+                      <button onClick={() => handleAction('STEAL')} className="bg-red-600 text-white font-pixel py-3 hover:scale-105 text-left px-4 group relative"><div className="relative z-10 flex justify-between items-center w-full"><span className="text-sm">😈 ROBAR</span><span className="text-[10px] bg-black text-white px-2 py-1 rounded">-10 Pts</span></div><div className="relative z-10 text-[10px] opacity-80 mt-1 font-terminal">-40 Silo / +60 Tú</div></button>
                     </>
                  )}
               </div>
@@ -655,8 +658,8 @@ export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
 
             {activeTab === 'RANKING' && (
                <table className="w-full font-terminal text-sm text-left"><thead className="text-gray-500 border-b border-gray-700 sticky top-0 bg-black"><tr><th className="pb-2 pl-2">#</th><th>CIUDADANO</th><th className="text-right">REP</th><th className="text-right pr-2">$$$</th></tr></thead><tbody>
-                  {[...bots, {id:999, name:'TÚ', reputation:myReputation, stash:myStash, isDead:amIExpelled, isMe:true}].filter(p => !p.isDead).sort((a,b) => b.reputation - a.reputation).map((player, index) => (
-                     <tr key={player.id} className={`border-b border-gray-900 ${player.isMe ? 'text-gold bg-gray-900' : 'text-gray-300'} ${player.isBankrupt ? 'opacity-50 text-red-500' : ''}`}><td className="py-2 pl-2">{index + 1}</td><td className="py-2">{player.isMe ? '⭐ TÚ' : player.name} {player.isBankrupt && '(SOS)'}</td><td className={`py-2 text-right ${player.reputation < 30 ? 'text-danger' : 'text-farm-green'}`}>{player.reputation}%</td><td className="py-2 text-right pr-2 font-mono">{player.isMe ? player.stash : '🔒???'}</td></tr>
+                  {[...bots, {id:999, name:'TÚ', personality: 'OPPORTUNIST', reputation:myReputation, stash:myStash, isDead:amIExpelled, isMe:true}].filter(p => !p.isDead).sort((a,b) => b.reputation - a.reputation).map((player, index) => (
+                     <tr key={player.id} className={`border-b border-gray-900 ${player.isMe ? 'text-gold bg-gray-900' : 'text-gray-300'} ${player.isBankrupt ? 'opacity-50 text-red-500' : ''}`}><td className="py-2 pl-2">{index + 1}</td><td className="py-2">{player.isMe ? '⭐ TÚ' : player.name} {player.isBankrupt && '(SOS)'}</td><td className={`py-2 text-right ${player.reputation < 30 ? 'text-danger' : 'text-farm-green'}`}>{player.reputation} Pts</td><td className="py-2 text-right pr-2 font-mono">{player.isMe ? player.stash : '🔒???'}</td></tr>
                   ))}
                </tbody></table>
             )}
