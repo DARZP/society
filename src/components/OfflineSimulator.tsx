@@ -17,6 +17,7 @@ interface BotPlayer {
   stats: PlayerStats;
   isDead: boolean;
   isBankrupt: boolean;
+  daysBankrupt: number; // Contador para muerte automática
 }
 
 interface VoteSession {
@@ -31,7 +32,7 @@ interface VoteSession {
 interface NewsItem {
   id: number;
   text: string;
-  type: 'INFO' | 'ALERT' | 'BANKRUPTCY_ALERT';
+  type: 'INFO' | 'ALERT' | 'BANKRUPTCY_ALERT' | 'DEATH';
   targetId?: number;
   data?: any;
 }
@@ -55,6 +56,7 @@ export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
   const [myStats, setMyStats] = useState<PlayerStats>({ stole: 0, collaborated: 0, private: 0, rescued: 0, donated: 0 });
   const [amIExpelled, setAmIExpelled] = useState(false);
   const [amIBankrupt, setAmIBankrupt] = useState(false);
+  const [myDaysBankrupt, setMyDaysBankrupt] = useState(0);
   
   // --- UI ---
   const [hasActed, setHasActed] = useState(false);
@@ -73,10 +75,10 @@ export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
   const [isRunning, setIsRunning] = useState(false);
   const [speed, setSpeed] = useState(2000);
 
-  const stateRef = useRef({ bots, myReputation, myStash, publicSilo, hasActed, amIExpelled, gamePhase, initialPop, initialTotalWealth, amIBankrupt });
+  const stateRef = useRef({ bots, myReputation, myStash, publicSilo, hasActed, amIExpelled, gamePhase, initialPop, initialTotalWealth, amIBankrupt, myDaysBankrupt });
   useEffect(() => {
-    stateRef.current = { bots, myReputation, myStash, publicSilo, hasActed, amIExpelled, gamePhase, initialPop, initialTotalWealth, amIBankrupt };
-  }, [bots, myReputation, myStash, publicSilo, hasActed, amIExpelled, gamePhase, initialPop, initialTotalWealth, amIBankrupt]);
+    stateRef.current = { bots, myReputation, myStash, publicSilo, hasActed, amIExpelled, gamePhase, initialPop, initialTotalWealth, amIBankrupt, myDaysBankrupt };
+  }, [bots, myReputation, myStash, publicSilo, hasActed, amIExpelled, gamePhase, initialPop, initialTotalWealth, amIBankrupt, myDaysBankrupt]);
 
   // --- CÁLCULOS ECONÓMICOS ---
   const activeBots = bots.filter(b => !b.isDead);
@@ -102,12 +104,11 @@ export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
     if (publicSilo < safeSiloLevel * 0.2) return { icon: '🔥', text: 'ANARQUÍA', color: 'text-red-600' };
     if (costOfLiving > 25) return { icon: '🤬', text: 'FURIA', color: 'text-danger' };
     if (costOfLiving > 15) return { icon: '😨', text: 'MIEDO', color: 'text-orange-400' };
-    if (parseFloat(inequalityPercentage) > 70) return { icon: '😒', text: 'TENSIÓN', color: 'text-yellow-400' };
     return { icon: '😎', text: 'ESTABLE', color: 'text-farm-green' };
   };
   const sentiment = getSocialSentiment();
 
-  const addNews = (text: string, type: 'INFO' | 'ALERT' | 'BANKRUPTCY_ALERT' = 'INFO', data?: any) => {
+  const addNews = (text: string, type: 'INFO' | 'ALERT' | 'BANKRUPTCY_ALERT' | 'DEATH' = 'INFO', data?: any) => {
     setNewsLog(prev => [{ id: Date.now() + Math.random(), text: `Día ${day}: ${text}`, type, data }, ...prev].slice(0, 30));
     if (activeTab !== 'NEWS') setUnreadNews(true);
   };
@@ -122,7 +123,8 @@ export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
       stash: Math.floor(Math.random() * 30) + 20, 
       stats: { stole: 0, collaborated: 0, private: 0, rescued: 0, donated: 0 },
       isDead: false,
-      isBankrupt: false
+      isBankrupt: false,
+      daysBankrupt: 0
     }));
 
     const playerStartStash = 50;
@@ -139,6 +141,7 @@ export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
     setMyStash(playerStartStash);
     setAmIExpelled(false);
     setAmIBankrupt(false);
+    setMyDaysBankrupt(0);
     setNewsLog([{ id: 1, text: "Bienvenido. Cuida la inflación.", type: 'INFO' }]);
     setIsRunning(false);
     setHasActed(false);
@@ -158,16 +161,13 @@ export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
     const taxPerHead = Math.ceil(deficit / activePopulation);
     let gathered = 0;
     
-    // Jugador
-    let takenFromMe = 0;
     if (!amIExpelled && !amIBankrupt) {
-       takenFromMe = Math.min(stateRef.current.myStash, taxPerHead);
+       const takenFromMe = Math.min(stateRef.current.myStash, taxPerHead);
        setMyStash(s => s - takenFromMe);
        gathered += takenFromMe;
     }
     setMyReputation(r => Math.max(0, r - 30));
 
-    // Bots
     setBots(prev => prev.map(b => {
       if (b.isDead || b.isBankrupt) return b;
       const taken = Math.min(b.stash, taxPerHead);
@@ -218,9 +218,7 @@ export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
         setMyStash(0);
         addNews(`🛑 CULPABLE (${yes} vs ${no}). Confiscado: $${confiscated}.`, 'ALERT');
       } else {
-        // Buscar víctima en el estado actual para obtener el monto correcto
-        const currentBots = stateRef.current.bots;
-        const victim = currentBots.find(b => b.id === voteSession.targetId);
+        const victim = bots.find(b => b.id === voteSession.targetId);
         if (victim) confiscated = Math.max(0, victim.stash);
 
         setBots(prev => prev.map(b => {
@@ -245,10 +243,10 @@ export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
      }
   };
 
-  const handleRescue = (type: 'PRIVATE' | 'PUBLIC' | 'IGNORE') => {
+  const handleRescue = (type: 'PRIVATE' | 'PUBLIC') => {
      if (!activeBailout) return;
      const { id, name, debt } = activeBailout;
-     const rescueCost = Math.abs(debt) + (costOfLiving * 7); // Deuda + 1 semana de vida
+     const rescueCost = Math.abs(debt) + (costOfLiving * 7);
 
      if (type === 'PRIVATE') {
         if (myStash >= rescueCost) {
@@ -262,9 +260,6 @@ export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
         setPublicSilo(s => s - rescueCost);
         resolveBankrupt(id, costOfLiving * 7);
         addNews(`🏛️ Rescate PÚBLICO para ${name}.`);
-     } else {
-        resolveBankrupt(id, -1);
-        addNews(`💀 ${name} exiliado por deudas.`, 'ALERT');
      }
      setActiveBailout(null);
      setIsRunning(true);
@@ -272,84 +267,121 @@ export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
 
   const resolveBankrupt = (id: number, finalStash: number) => {
      if (id === 999) {
-        if (finalStash === -1) setAmIExpelled(true);
-        else { setMyStash(finalStash); setAmIBankrupt(false); }
+        setMyStash(finalStash); 
+        setAmIBankrupt(false);
+        setMyDaysBankrupt(0);
      } else {
         setBots(prev => prev.map(b => {
            if (b.id === id) {
-              return finalStash === -1 ? { ...b, isDead: true, stash: 0 } : { ...b, stash: finalStash, isBankrupt: false };
+              return { ...b, stash: finalStash, isBankrupt: false, daysBankrupt: 0 };
            }
            return b;
         }));
      }
   };
 
-  // --- BUCLE IA & TIEMPO ---
+  // --- BUCLE PRINCIPAL ---
   useEffect(() => {
     let interval: any;
     if (isRunning && gamePhase === 'PLAYING') {
       interval = setInterval(() => {
         const currentData = stateRef.current;
         
-        // 1. AUTO-COLABORACIÓN (MATEMÁTICA IDÉNTICA)
-        if (!currentData.hasActed && !currentData.amIExpelled && !currentData.amIBankrupt) {
-           setPublicSilo(s => s + 25); 
-           // Gana 10, pero paga costo de vida
-           setMyStash(s => s + 10 - costOfLiving); 
-           setMyStats(s => ({ ...s, collaborated: s.collaborated + 1 }));
-        } else if (!currentData.amIExpelled && !currentData.amIBankrupt) {
-           setMyStash(prev => prev - costOfLiving);
+        // 1. JUGADOR: AUTO-COLABORACIÓN / COBRO
+        if (!currentData.amIExpelled && !currentData.amIBankrupt) {
+            if (!currentData.hasActed) {
+                // Auto: Gana 10, paga Costo.
+                setPublicSilo(s => s + 25);
+                setMyStash(s => s + 10 - costOfLiving);
+                setMyStats(s => ({ ...s, collaborated: s.collaborated + 1 }));
+            } else {
+                // Manual: Ya ganó lo del botón, solo paga.
+                setMyStash(prev => prev - costOfLiving);
+            }
         }
 
-        // 2. CHECK JUGADOR
-        if (!currentData.amIBankrupt && currentData.myStash < 0 && !currentData.amIExpelled) {
-           setAmIBankrupt(true);
-           addNews("¡ESTÁS EN QUIEBRA! Revisa NOTICIAS.", 'BANKRUPTCY_ALERT', { id: 999, name: 'TÚ', debt: currentData.myStash });
+        // 2. CHECK QUIEBRA JUGADOR
+        if (!currentData.amIBankrupt && !currentData.amIExpelled) {
+            setMyStash(currentStash => {
+                if (currentStash < 0) {
+                    setAmIBankrupt(true);
+                    setMyDaysBankrupt(0);
+                    addNews("¡ESTÁS EN QUIEBRA! Tienes 5 días.", 'BANKRUPTCY_ALERT', { id: 999, name: 'TÚ', debt: currentStash });
+                    return currentStash;
+                }
+                return currentStash;
+            });
+        } else if (currentData.amIBankrupt) {
+            setMyDaysBankrupt(days => {
+                if (days >= 5) {
+                    setAmIExpelled(true);
+                    addNews("Has muerto de inanición.", 'DEATH');
+                    return days;
+                }
+                return days + 1;
+            });
         }
 
         setDay(d => d + 1);
         setHasActed(false);
 
-        // 3. IA DE BOTS (NUEVA LÓGICA BASADA EN NECESIDAD)
+        // 3. IA BOTS (LÓGICA SUPERVIVENCIA)
         setBots(currentBots => currentBots.map(bot => {
           if (bot.isDead) return bot;
-          if (bot.isBankrupt) return bot;
+          
+          // GESTIÓN DE BANCARROTA
+          if (bot.isBankrupt) {
+             if (bot.daysBankrupt >= 5) {
+                 // MUERTE AUTOMÁTICA
+                 addNews(`✝️ ${bot.name} murió por pobreza.`, 'DEATH');
+                 return { ...bot, isDead: true, stash: 0 };
+             }
+             return { ...bot, daysBankrupt: bot.daysBankrupt + 1 };
+          }
 
           let newStash = bot.stash - costOfLiving;
           
+          // ENTRAR EN QUIEBRA
           if (newStash < 0) {
              addNews(`🆘 ${bot.name} pide rescate.`, 'BANKRUPTCY_ALERT', { id: bot.id, name: bot.name, debt: newStash });
-             return { ...bot, isBankrupt: true, stash: newStash };
+             return { ...bot, isBankrupt: true, stash: newStash, daysBankrupt: 0 };
           }
 
           let currentStats = { ...bot.stats };
           let newRep = bot.reputation;
           
-          // --- CEREBRO DEL BOT ---
-          const financialStress = costOfLiving / (Math.max(1, bot.stash)); // >1 = Pobreza extrema
-          const socialPanic = 1 - Math.min(1, currentData.publicSilo / (activePopulation * 50)); // >0.7 = Pánico
-          const roll = Math.random();
-          
-          let decision = 'PRIVATE'; // Decisión por defecto (Cautela)
+          // --- CEREBRO DE SUPERVIVENCIA ---
+          // Factor 1: Pobreza Personal. Si tengo poco dinero, NO colaboro.
+          const isPoor = newStash < (costOfLiving * 3); 
+          const isDesperate = newStash < (costOfLiving * 1.5);
 
-          // Escenario 1: Desesperación (Pobreza)
-          if (financialStress > 0.8) {
-             // Si es pobre, tiene alta probabilidad de robar para sobrevivir
-             if (roll < 0.7) decision = 'STEAL'; 
+          // Factor 2: Riqueza del Silo. Si el silo está lleno, NO colaboro (soy egoísta).
+          const siloIsFull = currentData.publicSilo > (activePopulation * 100); 
+          const siloIsCritical = currentData.publicSilo < (activePopulation * 20);
+
+          const roll = Math.random();
+          let decision = 'PRIVATE'; // Por defecto, cuido mi dinero
+
+          if (isDesperate) {
+             // Si voy a morir, robo (80%) o trabajo privado (20%)
+             if (roll < 0.8) decision = 'STEAL'; 
              else decision = 'PRIVATE';
           } 
-          // Escenario 2: Pánico Social (Silo Vacío)
-          else if (socialPanic > 0.8) {
-             // Si todo se derrumba, sálvese quien pueda
-             if (roll < 0.6) decision = 'PRIVATE'; 
-             else if (roll < 0.9) decision = 'STEAL';
-             else decision = 'COLLABORATE'; // Pocos héroes
+          else if (isPoor) {
+             // Si soy pobre, no dono. Privado o robo si soy corrupto.
+             if (bot.reputation < 40 && roll < 0.5) decision = 'STEAL';
+             else decision = 'PRIVATE';
           }
-          // Escenario 3: Tiempos Normales
+          else if (siloIsFull) {
+             // Si el silo está lleno, aprovecho para enriquecerme
+             if (bot.reputation < 30) decision = 'STEAL';
+             else decision = 'PRIVATE';
+          }
           else {
-             // Si está cómodo, colabora para mantener el sistema
-             // Ajuste: 90% colabora si la vida es fácil, para no colapsar rápido
-             if (roll < 0.8) decision = 'COLLABORATE';
+             // Si tengo dinero y el silo lo necesita, colaboro
+             // Pero solo si soy buena gente
+             if (bot.reputation > 50 && roll < 0.9) decision = 'COLLABORATE';
+             else if (siloIsCritical && roll < 0.5) decision = 'COLLABORATE'; // Pánico ayuda un poco
              else decision = 'PRIVATE';
           }
 
@@ -362,6 +394,7 @@ export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
              newStash += 20; 
              currentStats.private += 1;
           } else {
+             // COLLABORATE
              setPublicSilo(s => s + 25); 
              newRep += 1;
              newStash += 10; 
@@ -371,14 +404,15 @@ export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
           return { ...bot, reputation: Math.max(0, Math.min(100, newRep)), stash: newStash, stats: currentStats };
         }));
 
-        // 4. COLAPSO
+        // 4. CHECK FINAL DEL JUEGO
         setPublicSilo(prev => {
            let val = Math.max(0, prev);
-           const aliveCount = currentData.bots.filter(b => !b.isDead).length + (currentData.amIExpelled ? 0 : 1);
-           if (aliveCount < (currentData.initialPop / 2)) {
-              setIsRunning(false);
-              setGamePhase('GAMEOVER');
-           }
+           // Recalcular vivos DENTRO del intervalo para tener dato fresco
+           const finalBots = currentData.bots; // Nota: esto es un snapshot, idealmente usaríamos el resultado del map anterior, pero por simplicidad de react:
+           // En el siguiente render se evaluará game over si el estado se actualiza.
+           // Pero para forzar el check inmediato:
+           
+           // Check diferido al render siguiente para asegurar estado consistente
            return val;
         });
 
@@ -386,6 +420,15 @@ export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
     }
     return () => clearInterval(interval);
   }, [isRunning, speed, gamePhase, costOfLiving]);
+
+  // Efecto separado para Game Over para asegurar consistencia
+  useEffect(() => {
+      const activeCount = bots.filter(b => !b.isDead).length + (amIExpelled ? 0 : 1);
+      if (activeCount < (initialPop / 2) && gamePhase === 'PLAYING') {
+          setIsRunning(false);
+          setGamePhase('GAMEOVER');
+      }
+  }, [bots, amIExpelled, initialPop, gamePhase]);
 
 
   // --- ACCIONES MANUALES ---
@@ -417,7 +460,7 @@ export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
      if (myStash < 20 || hasActed) return;
      setMyStash(s => s - 20);
      setPublicSilo(s => s + 20);
-     setMyReputation(r => Math.min(100, r + 5)); // +5 Rep por donar
+     setMyReputation(r => Math.min(100, r + 5));
      setMyStats(s => ({...s, donated: s.donated + 20}));
      setHasActed(true);
   };
@@ -465,7 +508,7 @@ export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
              <button onClick={() => setGameOverSort('SAINT')} className={`bg-gray-900 p-2 border hover:scale-105 ${gameOverSort === 'SAINT' ? 'border-white' : 'border-farm-green'}`}><p className="text-farm-green">😇 SANTO</p><p className="text-white">{mostCollaborative.name}</p></button>
           </div>
           <div className="h-64 overflow-y-auto border border-gray-700 custom-scrollbar"><table className="w-full font-terminal text-sm text-left"><thead className="bg-danger text-black sticky top-0"><tr><th className="pl-2">#</th><th>NOMBRE</th><th className="text-right">VALOR</th><th className="text-right pr-2">$$$</th></tr></thead><tbody>{sortedList.map((p, i) => (
-             <tr key={i} className={`border-b border-gray-800 ${p.isMe ? 'text-gold' : 'text-gray-300'}`}><td className="pl-2">{i+1}</td><td>{p.name}</td><td className="text-right">{gameOverSort==='WEALTH'?p.stash:gameOverSort==='THEFT'?p.stats.stole:p.stats.collaborated}</td><td className="text-right pr-2">{p.stash}</td></tr>
+             <tr key={i} className={`border-b border-gray-800 ${p.isMe ? 'text-gold' : 'text-gray-300'} ${p.isDead ? 'opacity-50' : ''}`}><td className="pl-2">{i+1}</td><td>{p.name} {p.isDead && '💀'}</td><td className="text-right">{gameOverSort==='WEALTH'?p.stash:gameOverSort==='THEFT'?p.stats.stole:p.stats.collaborated}</td><td className="text-right pr-2">{p.stash}</td></tr>
           ))}</tbody></table></div>
           <button onClick={() => setGamePhase('SETUP')} className="mt-4 w-full bg-white text-black font-pixel py-3">REINICIAR</button>
         </div>
@@ -478,7 +521,7 @@ export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
     <div className="w-full max-w-md relative mt-8 h-[36rem]">
       <button onClick={onBack} className="absolute -top-10 left-0 text-soil hover:text-white underline font-pixel text-xs">&lt; SALIR</button>
 
-      {/* MODAL RESCATE */}
+      {/* MODAL RESCATE (DESDE NEWS) */}
       {activeBailout && (
         <div className="absolute inset-0 z-50 bg-black bg-opacity-95 flex flex-col items-center justify-center p-6 border-4 border-gold">
            <h3 className="text-gold font-pixel text-lg mb-2 text-center">RESCATE</h3>
@@ -486,7 +529,6 @@ export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
            <div className="flex flex-col gap-3 w-full">
               {amITopRep && <button onClick={() => handleRescue('PUBLIC')} className="bg-farm-green text-black py-3 font-pixel text-xs">🏛️ PÚBLICO (Líder)</button>}
               <button onClick={() => handleRescue('PRIVATE')} disabled={myStash < (Math.abs(activeBailout.debt) + (costOfLiving * 7))} className="bg-gold text-black py-3 font-pixel text-xs disabled:opacity-50">🤝 PRIVADO</button>
-              <button onClick={() => handleRescue('IGNORE')} className="bg-gray-700 text-white py-3 font-pixel text-xs">💀 IGNORAR</button>
            </div>
            <button onClick={() => { setActiveBailout(null); setIsRunning(true); }} className="mt-4 text-gray-500 underline text-xs">CANCELAR</button>
         </div>
@@ -546,7 +588,7 @@ export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
             {activeTab === 'ACTIONS' && (
               <div className="flex flex-col gap-3 h-full justify-center">
                  {amIExpelled ? <p className="text-danger text-center font-pixel">ESTÁS EXILIADO</p> : amIBankrupt ? (
-                    <div className="text-center"><p className="text-danger font-bold mb-4">¡ESTÁS EN QUIEBRA!</p><p className="text-xs text-gray-400">Ve a NOTICIAS para ver tu estado.</p></div>
+                    <div className="text-center"><p className="text-danger font-bold mb-4">¡ESTÁS EN QUIEBRA!</p><p className="text-xs text-gray-400 mb-2">Te quedan {5 - myDaysBankrupt} días de vida.</p><p className="text-xs text-gray-400">Ve a NOTICIAS para ver si alguien te ayuda.</p></div>
                  ) : hasActed ? (
                     <div className="text-center text-gray-500 font-terminal p-8 border-2 border-dashed border-gray-800"><p>Jornada terminada.</p><p className="text-xs text-farm-green mt-1">Ingreso Automático (+10)</p><p className="text-xs text-danger mt-1">Costo Vida: -{costOfLiving}</p></div>
                  ) : (
