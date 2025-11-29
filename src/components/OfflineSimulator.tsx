@@ -70,7 +70,7 @@ const FLAVOR_TEXTS = [
 // GENERADOR DE NOMBRES
 const generateName = () => {
   const prefixes = ["Noob", "Don", "señor", "Master" "SR" "Mr" "xxx", "Max", "S4", "pink", "hack", "M-3", "Doroteo", "doña", "meme", "super", "el", "la", "01", "007", "Mike", "Dr", "Lord", "Sir", "Lady", "Cyber", "Iron", "Dark", "Neo", "Cap", "The", "1,1", "Special", "Agente", "Sayayin", "Luis"];
-  const bases = ["Juan", "Lolo", "Sofia", "Julieta", #Diego", "Lis", "Alex!, "Bicho", "Derek", "Saul", "Goodman", "Jessie" "Pinkman", "Pau", "Wolf", "Fox", "Hawk", "Lion", "Ghost", "Viper", "Zero", "Prime", "Stark", "Flux", "basado", "Xavi", "Rino", "Masterchief", "Leandro", "Heroe"];
+  const bases = ["Juan", "Lolo", "Sofia", "Julieta", "Diego", "Lis", "Alex!, "Bicho", "Derek", "Saul", "Goodman", "Jessie" "Pinkman", "Pau", "Wolf", "Fox", "Hawk", "Lion", "Ghost", "Viper", "Zero", "Prime", "Stark", "Flux", "basado", "Xavi", "Rino", "Masterchief", "Leandro", "Heroe"];
   return `${prefixes[Math.floor(Math.random()*prefixes.length)]}${bases[Math.floor(Math.random()*bases.length)]}_${Math.floor(Math.random()*99)}`;
 };
 
