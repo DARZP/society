@@ -121,12 +121,13 @@ export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
 
   const [bots, setBots] = useState<BotPlayer[]>([]);
 
-  // REFERENCIA PARA LOGICA (Evita stale closures)
+  // Refs de control
+  const processingDayRef = useRef(false); // SEMÁFORO PARA EVITAR DOBLE COBRO
   const stateRef = useRef({ 
     bots, myReputation, myStash, publicSilo, hasActed, amIExpelled, 
     gamePhase, initialPop, amIBankrupt, myDaysBankrupt, autoPilotAction,
     voteSession, activeBailout, activeAnnouncement, initialTotalWealth,
-    currentCostOfLiving: 5 // Valor por defecto, se actualiza en render
+    currentCostOfLiving: 5
   });
 
   // --- 1. MOTOR ECONÓMICO ---
@@ -135,11 +136,11 @@ export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
       const totalPriv = currentBots.reduce((acc, b) => acc + b.stash, 0) + (isExpelled ? 0 : pStash);
       const currentTotal = pSilo + totalPriv;
 
-      // Inflación Suavizada
+      // Inflación
       const wealthRatio = currentTotal / (initWealth || 1);
       const inflation = Math.pow(Math.max(0.1, wealthRatio), 0.4); 
 
-      // Escasez Topeada
+      // Escasez
       const safeSilo = activeP * 50;
       const stress = Math.max(0, (safeSilo * 0.4) - pSilo); 
       const scarcity = 1 + ((stress / (safeSilo * 0.4 || 1)) * 1.5); 
@@ -150,23 +151,23 @@ export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
       return { cost, activeP, totalPriv, currentTotal, safeSilo };
   };
 
-  // CÁLCULO EN RENDER (LO QUE VES)
+  // CÁLCULO EN RENDER
   const ecoMetrics = calculateEconomy(bots, publicSilo, myStash, amIExpelled, initialTotalWealth);
   const costOfLiving = ecoMetrics.cost;
   const activePopulation = ecoMetrics.activeP;
 
-  // Actualizar Ref con el costo VISUAL actual para que el cobro sea idéntico
+  // Actualizar Ref
   useEffect(() => {
       stateRef.current = { 
         ...stateRef.current,
         bots, myReputation, myStash, publicSilo, hasActed, amIExpelled, 
         gamePhase, initialPop, amIBankrupt, myDaysBankrupt, autoPilotAction,
         voteSession, activeBailout, activeAnnouncement, initialTotalWealth,
-        currentCostOfLiving: costOfLiving // <--- SINCRONIZACIÓN CLAVE
+        currentCostOfLiving: costOfLiving 
       };
   }, [bots, myReputation, myStash, publicSilo, hasActed, amIExpelled, gamePhase, initialPop, amIBankrupt, myDaysBankrupt, autoPilotAction, voteSession, activeBailout, activeAnnouncement, initialTotalWealth, costOfLiving]);
 
-  // Estadísticas Visuales
+  // Estadísticas UI
   const publicRatio = parseFloat(((publicSilo / (ecoMetrics.currentTotal || 1)) * 100).toFixed(1));
   const allStashes = [...bots.filter(b=>!b.isDead).map(b => b.stash), (amIExpelled ? 0 : myStash)].sort((a, b) => b - a);
   const top10Count = Math.ceil(allStashes.length * 0.1);
@@ -199,11 +200,105 @@ export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
       setUserMessage("");
   };
 
+  // --- FUNCIONES DE EVENTOS ---
+  // IMPORTANTE: Calculamos los valores necesarios DENTRO de la función para evitar ReferenceError
+  const executeExpropriation = (isBotAction: boolean, leaderName: string) => {
+    const currentData = stateRef.current;
+    
+    // Calcular nivel seguro localmente para evitar error de referencia
+    const activeP = currentData.bots.filter(b => !b.isDead).length + (currentData.amIExpelled ? 0 : 1);
+    const localSafeSilo = activeP * 50; 
+    
+    const deficit = localSafeSilo - currentData.publicSilo;
+    if (deficit <= 0 && isBotAction) return;
+    
+    const taxPerHead = Math.max(10, Math.ceil(deficit / (activeP || 1)));
+    let gathered = 0;
+    
+    if (!currentData.amIExpelled && !currentData.amIBankrupt) {
+       const taken = Math.min(currentData.myStash, taxPerHead);
+       setMyStash(s => s - taken); gathered += taken;
+    }
+    if (!isBotAction) setMyReputation(r => Math.max(0, r - 30));
+
+    setBots(prev => prev.map(b => {
+      if (b.isDead || b.isBankrupt) return b;
+      const taken = Math.min(b.stash, taxPerHead);
+      gathered += taken;
+      return { ...b, stash: b.stash - taken };
+    }));
+    setPublicSilo(prev => prev + gathered);
+    
+    setActiveAnnouncement({ title: "📢 EXPROPIACIÓN", message: `${leaderName} confiscó $${gathered}.`, type: 'EXPROPRIATION' });
+    setNotificationTimer(100);
+    addNews(`📢 EXPROPIACIÓN por ${leaderName}. Recaudado: $${gathered}.`, 'EXPROPRIATION');
+  };
+
+  const startVoteAgainst = (targetId: number, targetName: string, targetRep: number, accuser: string) => {
+      const currentData = stateRef.current;
+      setShowSuspects(false);
+      setNotificationTimer(100);
+      setVoteSession({ targetId, targetName, targetReputation: targetRep, accusedBy: accuser, isOpen: true, bailCost: currentData.currentCostOfLiving * 5 });
+  };
+
+  const finalizeVote = (playerVote: 'YES' | 'NO' | 'ABSTAIN') => {
+    if (!voteSession) return;
+    const { bots } = stateRef.current;
+    let yes = playerVote === 'YES' ? 1 : 0; 
+    let no = playerVote === 'NO' ? 1 : 0;
+
+    bots.filter(b => !b.isDead && b.id !== voteSession.targetId).forEach(bot => {
+       const prejudice = (100 - voteSession.targetReputation) / 100;
+       if (Math.random() < (prejudice - 0.1)) yes++; else no++;
+    });
+
+    if (yes > no) {
+      let confiscated = 0;
+      if (voteSession.targetId === 999) { 
+          setAmIExpelled(true); confiscated = stateRef.current.myStash; setMyStash(0); 
+          addNews(`🛑 EXPULSADO. Se incautaron tus $${confiscated}.`, 'ALERT'); 
+      } else { 
+          const victim = bots.find(b => b.id === voteSession.targetId);
+          if (victim) confiscated = Math.max(0, victim.stash);
+          setBots(prev => prev.map(b => b.id === voteSession.targetId ? { ...b, isDead: true, stash: 0 } : b)); 
+          addNews(`🔨 EXPULSADO: ${voteSession.targetName}. Incautado: $${confiscated}.`, 'ALERT'); 
+      }
+      setPublicSilo(prev => prev + confiscated); 
+    } else { addNews(`🛡️ INOCENTE: ${voteSession.targetName}.`); }
+    setVoteSession(null);
+  };
+
   const handleNotificationTimeout = () => {
       const { voteSession, activeBailout, activeAnnouncement } = stateRef.current;
       if (voteSession) finalizeVote('ABSTAIN'); 
       else if (activeBailout) setActiveBailout(null); 
       else if (activeAnnouncement) setActiveAnnouncement(null);
+  };
+
+  const handleRescue = (type: 'PRIVATE' | 'PUBLIC') => {
+     if (!activeBailout) return;
+     const { id, name, debt, newsId } = activeBailout;
+     const emergencyFund = stateRef.current.currentCostOfLiving * 7;
+     const totalCost = Math.abs(debt) + emergencyFund;
+
+     if (type === 'PRIVATE') {
+        if (myStash >= totalCost) {
+           setMyStash(s => s - totalCost);
+           setMyReputation(r => Math.min(100, r + 20)); setMyStats(s => ({ ...s, rescued: s.rescued + 1 }));
+           resolveBankrupt(id, emergencyFund); addNews(`🤝 TÚ rescataste a ${name}.`);
+           markNewsResolved(newsId);
+        }
+     } else {
+        setPublicSilo(s => s - totalCost);
+        resolveBankrupt(id, emergencyFund); addNews(`🏛️ Rescate PÚBLICO para ${name}.`);
+        markNewsResolved(newsId);
+     }
+     setActiveBailout(null);
+  };
+
+  const resolveBankrupt = (id: number, finalStash: number) => {
+     if (id === 999) { setMyStash(finalStash); setAmIBankrupt(false); setMyDaysBankrupt(0); }
+     else { setBots(prev => prev.map(b => b.id === id ? { ...b, stash: finalStash, isBankrupt: false, daysBankrupt: 0 } : b)); }
   };
 
   // --- ACCIONES ---
@@ -242,6 +337,10 @@ export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
 
   // --- MOTOR DE JUEGO (FIN DEL DÍA) ---
   const processDayEnd = () => {
+    // Si ya estamos procesando, DETENER. (Fix del cobro doble)
+    if (processingDayRef.current) return;
+    processingDayRef.current = true;
+
     const currentData = stateRef.current;
     
     // 1. COBRO GARANTIZADO (Usamos el valor visual congelado)
@@ -250,11 +349,13 @@ export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
     // Check Game Over
     const activeBotsCount = currentData.bots.filter(b => !b.isDead).length + (currentData.amIExpelled ? 0 : 1);
     if (activeBotsCount < (currentData.initialPop / 2)) {
-       setIsPaused(true); setGamePhase('GAMEOVER'); return;
+       setIsPaused(true); setGamePhase('GAMEOVER'); 
+       processingDayRef.current = false;
+       return;
     }
 
     // Noticias & Chat Random (Baja Frecuencia)
-    if (Math.random() < 0.05) { // 5% prob diaria
+    if (Math.random() < 0.08) { 
         const randomNews = FLAVOR_TEXTS[Math.floor(Math.random() * FLAVOR_TEXTS.length)];
         setActiveAnnouncement({ title: "📰 NOTICIA FLASH", message: randomNews, type: 'FLAVOR' });
         setNotificationTimer(100);
@@ -262,31 +363,23 @@ export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
     }
     if (Math.random() < 0.3) {
         const randomBot = currentData.bots[Math.floor(Math.random() * currentData.bots.length)];
-        if(!randomBot.isDead) addChat(randomBot.name, BOT_COMMENTS[Math.floor(Math.random() * BOT_COMMENTS.length)]);
+        if(randomBot && !randomBot.isDead) addChat(randomBot.name, BOT_COMMENTS[Math.floor(Math.random() * BOT_COMMENTS.length)]);
     }
 
     // 2. COBROS JUGADOR
-    let income = 0;
     if (!currentData.amIExpelled && !currentData.amIBankrupt) {
       if (currentData.hasActed) {
-         // Ya actuó y ganó dinero antes. Solo cobramos.
          setMyStash(prev => prev - fixedDailyCost);
-         // Calculamos income retrospectivamente solo para el log (aproximado)
-         income = 0; // Ya se sumó al clickear
       } else {
          if (currentData.autoPilotAction) {
             executePlayerAction(currentData.autoPilotAction, true); 
+            // Nota: executePlayerAction ya modifica el stash sumando ganancia. Aquí restamos el costo.
             setMyStash(prev => prev - fixedDailyCost);
-            income = 10; // Minimo aprox
          } else {
             setMyStash(prev => prev - fixedDailyCost);
             addNews("💤 Inactividad: Costo de vida cobrado.", "ALERT");
          }
       }
-      
-      // LOG FINANCIERO EN CHAT (Transparencia Total)
-      const gained = currentData.hasActed ? "(Ya sumado)" : (currentData.autoPilotAction ? "+Auto" : "0");
-      addChat("SISTEMA", `Resumen Día ${day}: Gastaste -$${fixedDailyCost}`, true);
     }
 
     // Desgaste
@@ -294,29 +387,39 @@ export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
     setBots(prev => prev.map(b => ({ ...b, reputation: Math.max(0, b.reputation - 2) })));
 
     // Bancarrota
-    if (!currentData.amIBankrupt && (stateRef.current.myStash - fixedDailyCost) < 0 && !currentData.amIExpelled) {
-       setAmIBankrupt(true); setMyDaysBankrupt(0);
-       addNews("¡ESTÁS EN QUIEBRA!", 'BANKRUPTCY_ALERT', { id: 999, name: 'TÚ', debt: stateRef.current.myStash - fixedDailyCost });
-    } else if (currentData.amIBankrupt) {
+    // Importante: Chequeo diferido para dar tiempo al setMyStash
+    setTimeout(() => {
+        if (!stateRef.current.amIBankrupt && stateRef.current.myStash < 0 && !stateRef.current.amIExpelled) {
+            setAmIBankrupt(true); setMyDaysBankrupt(0);
+            addNews("¡ESTÁS EN QUIEBRA!", 'BANKRUPTCY_ALERT', { id: 999, name: 'TÚ', debt: stateRef.current.myStash });
+        }
+    }, 0);
+
+    if (currentData.amIBankrupt) {
        setMyDaysBankrupt(days => {
            if (days >= 5) { setAmIExpelled(true); addNews("Has muerto de inanición.", 'DEATH'); return days; }
            return days + 1;
        });
     }
 
-    // Turno Bots
+    // Turno Bots (Pasamos dailyCost calculado para que usen el mismo)
     processBotsTurn(currentData, fixedDailyCost);
 
     setDay(d => d + 1);
     setHasActed(false);
-    setDayProgress(0); 
+    setDayProgress(0);
+    
+    // LIBERAR SEMÁFORO
+    setTimeout(() => { processingDayRef.current = false; }, 100); 
   };
 
   const processBotsTurn = (currentData: any, currentCost: number) => {
-      const activeList = [...currentData.bots.filter((b:any) => !b.isDead), { id: 999, name: 'TÚ', reputation: currentData.myReputation, isDead: currentData.amIExpelled }];
-      const topRep = activeList.sort((a,b) => b.reputation - a.reputation)[0];
+      const topRep = [...currentData.bots].sort((a:any,b:any) => b.reputation - a.reputation)[0];
       
-      if (topRep && topRep.id !== 999 && currentData.publicSilo < (activePopulation * 20)) {
+      // Calculo seguro de poblacion para la IA
+      const activeP = currentData.bots.filter((b:any) => !b.isDead).length + (currentData.amIExpelled ? 0 : 1);
+      
+      if (topRep && topRep.id !== 999 && currentData.publicSilo < (activeP * 20)) {
           if (Math.random() < 0.2) executeExpropriation(true, "Líder Bot");
       }
 
@@ -355,7 +458,7 @@ export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
          }
          
          const roll = Math.random();
-         const isCrisis = currentData.publicSilo < (activePopulation * 10);
+         const isCrisis = currentData.publicSilo < (activeP * 10);
          let decision: ActionType = 'PRIVATE';
 
          if (isCrisis && bot.personality !== 'GREEDY') {
@@ -386,86 +489,6 @@ export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
       }));
   };
 
-  // --- EVENTS ---
-  const executeExpropriation = (isBotAction: boolean, leaderName: string) => {
-    const targetSilo = safeSiloLevel; 
-    const deficit = targetSilo - stateRef.current.publicSilo;
-    if (deficit <= 0 && isBotAction) return;
-    const taxPerHead = Math.ceil(deficit / activePopulation);
-    let gathered = 0;
-    
-    if (!stateRef.current.amIExpelled && !stateRef.current.amIBankrupt) {
-       const taken = Math.min(stateRef.current.myStash, taxPerHead);
-       setMyStash(s => s - taken); gathered += taken;
-    }
-    if (!isBotAction) setMyReputation(r => Math.max(0, r - 30));
-
-    setBots(prev => prev.map(b => {
-      if (b.isDead || b.isBankrupt) return b;
-      const taken = Math.min(b.stash, taxPerHead);
-      gathered += taken;
-      return { ...b, stash: b.stash - taken };
-    }));
-    setPublicSilo(prev => prev + gathered);
-    setActiveAnnouncement({ title: "📢 EXPROPIACIÓN", message: `${leaderName} confiscó $${gathered}.`, type: 'EXPROPRIATION' });
-    setNotificationTimer(100);
-    addNews(`📢 EXPROPIACIÓN por ${leaderName}. Recaudado: $${gathered}.`, 'EXPROPRIATION');
-  };
-
-  const startVoteAgainst = (targetId: number, targetName: string, targetRep: number, accuser: string) => {
-      setShowSuspects(false);
-      setNotificationTimer(100);
-      setVoteSession({ targetId, targetName, targetReputation: targetRep, accusedBy: accuser, isOpen: true, bailCost: costOfLiving * 5 });
-  };
-
-  const finalizeVote = (playerVote: 'YES' | 'NO' | 'ABSTAIN') => {
-    if (!voteSession) return;
-    const { bots } = stateRef.current;
-    let yes = playerVote === 'YES' ? 1 : 0; 
-    let no = playerVote === 'NO' ? 1 : 0;
-
-    bots.filter(b => !b.isDead && b.id !== voteSession.targetId).forEach(bot => {
-       const prejudice = (100 - voteSession.targetReputation) / 100;
-       if (Math.random() < (prejudice - 0.1)) yes++; else no++;
-    });
-
-    if (yes > no) {
-      let confiscated = 0;
-      if (voteSession.targetId === 999) { 
-          setAmIExpelled(true); confiscated = stateRef.current.myStash; setMyStash(0); 
-          addNews(`🛑 EXPULSADO. Se incautaron tus $${confiscated}.`, 'ALERT'); 
-      } else { 
-          const victim = bots.find(b => b.id === voteSession.targetId);
-          if (victim) confiscated = Math.max(0, victim.stash);
-          setBots(prev => prev.map(b => b.id === voteSession.targetId ? { ...b, isDead: true, stash: 0 } : b)); 
-          addNews(`🔨 EXPULSADO: ${voteSession.targetName}. Incautado: $${confiscated}.`, 'ALERT'); 
-      }
-      setPublicSilo(prev => prev + confiscated); 
-    } else { addNews(`🛡️ INOCENTE: ${voteSession.targetName}.`); }
-    setVoteSession(null);
-  };
-
-  const handleRescue = (type: 'PRIVATE' | 'PUBLIC') => {
-     if (!activeBailout) return;
-     const { id, name, debt, newsId } = activeBailout;
-     const emergencyFund = costOfLiving * 7;
-     const totalCost = Math.abs(debt) + emergencyFund;
-
-     if (type === 'PRIVATE') {
-        if (myStash >= totalCost) {
-           setMyStash(s => s - totalCost);
-           setMyReputation(r => Math.min(100, r + 20)); setMyStats(s => ({ ...s, rescued: s.rescued + 1 }));
-           resolveBankrupt(id, emergencyFund); addNews(`🤝 TÚ rescataste a ${name}.`);
-           markNewsResolved(newsId);
-        }
-     } else {
-        setPublicSilo(s => s - totalCost);
-        resolveBankrupt(id, emergencyFund); addNews(`🏛️ Rescate PÚBLICO para ${name}.`);
-        markNewsResolved(newsId);
-     }
-     setActiveBailout(null);
-  };
-
   // --- TIME LOOP ---
   useEffect(() => {
     let tickInterval: any;
@@ -474,7 +497,10 @@ export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
       tickInterval = setInterval(() => {
         setDayProgress(prev => {
           const increment = 0.5 * speedMultiplier; 
-          if (prev + increment >= 100) { processDayEnd(); return 0; }
+          if (prev + increment >= 100) { 
+              processDayEnd(); 
+              return 0; 
+          }
           return prev + increment;
         });
         if (stateRef.current.voteSession || stateRef.current.activeBailout || stateRef.current.activeAnnouncement) {
