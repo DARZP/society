@@ -1,3 +1,4 @@
+
 import { useState, useEffect, useRef } from 'react';
 
 // --- TIPOS ---
@@ -38,7 +39,7 @@ interface VoteSession {
 interface Announcement {
   title: string;
   message: string;
-  type: 'EXPROPRIATION' | 'FLAVOR' | 'CRISIS' | 'DAILY_SUMMARY';
+  type: 'EXPROPRIATION' | 'FLAVOR' | 'CRISIS';
 }
 
 interface NewsItem {
@@ -105,9 +106,12 @@ export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
   const [newsLog, setNewsLog] = useState<NewsItem[]>([]);
   const [unreadNews, setUnreadNews] = useState(false);
   const [newsFilter, setNewsFilter] = useState<NewsFilter>('ALL');
-  const [chatLog, setChatLog] = useState<ChatMessage[]>([]); // CHAT
-  const [gameOverSort, setGameOverSort] = useState<SortType>('WEALTH');
   
+  // CHAT INTERACTIVO
+  const [chatLog, setChatLog] = useState<ChatMessage[]>([]);
+  const [userMessage, setUserMessage] = useState("");
+
+  const [gameOverSort, setGameOverSort] = useState<SortType>('WEALTH');
   const [editMode, setEditMode] = useState(false);
   const [widgets, setWidgets] = useState({ wealth: true, sentiment: true, gini: true, distribution: true, poverty: true });
 
@@ -133,34 +137,36 @@ export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
     };
   }, [bots, myReputation, myStash, publicSilo, hasActed, amIExpelled, gamePhase, initialPop, amIBankrupt, myDaysBankrupt, autoPilotAction, voteSession, activeBailout, activeAnnouncement, initialTotalWealth]);
 
-  // --- MOTOR ECONÓMICO UNIFICADO ---
-  // Esta función es la ÚNICA fuente de verdad para el costo de vida
+  // --- MOTOR ECONÓMICO (Versión Estabilizada) ---
   const calculateEconomy = (currentBots: BotPlayer[], pSilo: number, pStash: number, isExpelled: boolean, initWealth: number) => {
       const activeP = currentBots.filter(b => !b.isDead).length + (isExpelled ? 0 : 1);
       const totalPriv = currentBots.reduce((acc, b) => acc + b.stash, 0) + (isExpelled ? 0 : pStash);
       const currentTotal = pSilo + totalPriv;
 
-      // Inflación
+      // 1. Inflación (Muy suavizada con raíz cúbica)
       const wealthRatio = currentTotal / (initWealth || 1);
-      const inflation = Math.sqrt(Math.max(0.1, wealthRatio));
+      const inflation = Math.pow(Math.max(0.1, wealthRatio), 0.4); // Más suave que sqrt
 
-      // Escasez
+      // 2. Escasez (Topeada)
       const safeSilo = activeP * 50;
-      const stress = Math.max(0, (safeSilo * 0.5) - pSilo);
-      const scarcity = 1 + ((stress / (safeSilo * 0.5 || 1)) * 2);
+      const stress = Math.max(0, (safeSilo * 0.4) - pSilo); // Solo afecta si baja del 40%
+      const scarcity = 1 + ((stress / (safeSilo * 0.4 || 1)) * 1.5); // Max penalización x2.5
 
+      // 3. Costo Base
       const rawCost = 5 * inflation * scarcity;
+      
+      // Limite de seguridad: El costo no debería subir instantáneamente a locuras
+      // Se mantiene estable.
       const cost = Math.max(1, Math.floor(rawCost));
 
       return { cost, activeP, totalPriv, currentTotal, safeSilo };
   };
 
-  // Cálculos para Render (Usando el estado actual)
   const ecoMetrics = calculateEconomy(bots, publicSilo, myStash, amIExpelled, initialTotalWealth);
   const costOfLiving = ecoMetrics.cost;
   const activePopulation = ecoMetrics.activeP;
 
-  // Estadísticas UI
+  // Stats Visuales
   const publicRatio = parseFloat(((publicSilo / (ecoMetrics.currentTotal || 1)) * 100).toFixed(1));
   const allStashes = [...bots.filter(b=>!b.isDead).map(b => b.stash), (amIExpelled ? 0 : myStash)].sort((a, b) => b - a);
   const top10Count = Math.ceil(allStashes.length * 0.1);
@@ -187,11 +193,21 @@ export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
       setChatLog(prev => [{ id: Date.now()+Math.random(), sender, text, isSystem }, ...prev].slice(0, 15));
   };
 
+  const sendUserMessage = () => {
+      if (!userMessage.trim()) return;
+      addChat("TÚ", userMessage.trim(), false);
+      setUserMessage("");
+  };
+
   const handleNotificationTimeout = () => {
       const { voteSession, activeBailout, activeAnnouncement } = stateRef.current;
-      if (voteSession) finalizeVote('ABSTAIN'); 
-      else if (activeBailout) setActiveBailout(null); 
-      else if (activeAnnouncement) setActiveAnnouncement(null);
+      if (voteSession) {
+          finalizeVote('ABSTAIN'); 
+      } else if (activeBailout) {
+          setActiveBailout(null); 
+      } else if (activeAnnouncement) {
+          setActiveAnnouncement(null);
+      }
   };
 
   // --- ACCIONES ---
@@ -232,8 +248,8 @@ export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
   const processDayEnd = () => {
     const currentData = stateRef.current;
     
-    // 1. RECALCULAR ECONOMÍA EXACTA PARA EL COBRO
-    // Usamos los datos actuales para asegurar que lo que se cobra es real
+    // 1. CALCULAR COSTO REAL
+    // Usamos el estado actual para que coincida con lo que vio el usuario
     const ecoData = calculateEconomy(currentData.bots, currentData.publicSilo, currentData.myStash, currentData.amIExpelled, currentData.initialTotalWealth);
     const dailyCost = ecoData.cost;
 
@@ -242,8 +258,8 @@ export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
        setIsPaused(true); setGamePhase('GAMEOVER'); return;
     }
 
-    // Noticias & Chat Random
-    if (Math.random() < 0.25) { 
+    // Noticias & Chat Random (Frecuencia Ajustada)
+    if (Math.random() < 0.08) { // 8% prob diaria (aprox cada 12 días)
         const randomNews = FLAVOR_TEXTS[Math.floor(Math.random() * FLAVOR_TEXTS.length)];
         setActiveAnnouncement({ title: "📰 NOTICIA FLASH", message: randomNews, type: 'FLAVOR' });
         setNotificationTimer(100);
@@ -261,24 +277,20 @@ export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
       } else {
          if (currentData.autoPilotAction) {
             executePlayerAction(currentData.autoPilotAction, true); 
-            // Nota: executePlayerAction ya modifica el stash sumando ganancia.
-            // Aquí restamos el costo.
+            // Nota: executePlayerAction ya modifica el stash sumando ganancia. Aquí restamos el costo.
             setMyStash(prev => prev - dailyCost);
          } else {
             setMyStash(prev => prev - dailyCost);
             addNews("💤 Inactividad: Costo de vida cobrado.", "ALERT");
          }
       }
-      // Mostrar Recibo Diario en Notificación
-      setActiveAnnouncement({ title: "📅 FIN DEL DÍA", message: `Costo de Vida: -$${dailyCost}`, type: 'DAILY_SUMMARY' });
-      setNotificationTimer(100);
     }
 
     // Desgaste
     setMyReputation(r => Math.max(0, r - 2)); 
     setBots(prev => prev.map(b => ({ ...b, reputation: Math.max(0, b.reputation - 2) })));
 
-    // Bancarrota check (usando el stash actualizado post-cobro, aprox)
+    // Bancarrota check
     if (!currentData.amIBankrupt && (stateRef.current.myStash - dailyCost) < 0 && !currentData.amIExpelled) {
        setAmIBankrupt(true); setMyDaysBankrupt(0);
        addNews("¡ESTÁS EN QUIEBRA!", 'BANKRUPTCY_ALERT', { id: 999, name: 'TÚ', debt: stateRef.current.myStash - dailyCost });
@@ -525,8 +537,8 @@ export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
 
          {(voteSession?.isOpen || activeBailout || activeAnnouncement) && (
             <div className="absolute top-16 left-0 right-0 z-40 p-2 animate-slide-down">
-                <div className={`bg-gray-800 border-2 rounded-xl shadow-2xl p-3 overflow-hidden ${activeAnnouncement?.type==='FLAVOR'?'border-pink-500':activeAnnouncement?.type==='EXPROPRIATION'?'border-red-500':activeAnnouncement?.type==='DAILY_SUMMARY'?'border-blue-500':'border-gold'}`}>
-                    <div className={`absolute top-0 left-0 h-1 transition-all duration-75 ease-linear ${activeAnnouncement?.type==='FLAVOR'?'bg-pink-500':activeAnnouncement?.type==='DAILY_SUMMARY'?'bg-blue-500':'bg-gold'}`} style={{ width: `${notificationTimer}%` }}></div>
+                <div className={`bg-gray-800 border-2 rounded-xl shadow-2xl p-3 overflow-hidden ${activeAnnouncement?.type==='FLAVOR'?'border-pink-500':activeAnnouncement?.type==='EXPROPRIATION'?'border-red-500':activeAnnouncement?.type==='CRISIS'?'border-blue-500':'border-gold'}`}>
+                    <div className={`absolute top-0 left-0 h-1 transition-all duration-75 ease-linear ${activeAnnouncement?.type==='FLAVOR'?'bg-pink-500':activeAnnouncement?.type==='CRISIS'?'bg-blue-500':'bg-gold'}`} style={{ width: `${notificationTimer}%` }}></div>
                     {voteSession && (<div className="flex flex-col gap-2"><div className="flex justify-between items-center"><span className="text-[10px] text-gold font-bold uppercase">🚨 JUICIO</span></div><p className="text-xs text-white text-center">{voteSession.accusedBy} vs <span className="font-bold text-red-400">{voteSession.targetName}</span></p><div className="flex gap-2 mt-1"><button onClick={()=>finalizeVote('YES')} className="flex-1 bg-red-900 text-red-100 text-[10px] py-2 rounded">CULPABLE</button><button onClick={()=>finalizeVote('NO')} className="flex-1 bg-blue-900 text-blue-100 text-[10px] py-2 rounded">INOCENTE</button><button onClick={()=>finalizeVote('ABSTAIN')} className="px-2 bg-gray-700 text-gray-300 text-[10px] py-2 rounded">OMITIR</button></div></div>)}
                     {activeBailout && (<div className="flex flex-col gap-2"><div className="flex justify-between items-center"><span className="text-[10px] text-gold font-bold uppercase">🚑 SOS DEUDA</span></div><p className="text-xs text-white text-center">Rescatar a <span className="text-blue-400">{activeBailout.name}</span> cuesta <span className="text-gold font-bold">${Math.abs(activeBailout.debt)+(costOfLiving*7)}</span></p><div className="flex gap-2 mt-1"><button disabled={myStash<(Math.abs(activeBailout.debt)+(costOfLiving*7))} onClick={()=>handleRescue('PRIVATE')} className="flex-1 bg-gold text-black text-[10px] py-2 rounded disabled:opacity-50">PAGAR</button><button onClick={()=>setActiveBailout(null)} className="px-2 bg-gray-700 text-gray-300 text-[10px] py-2 rounded">IGNORAR</button></div></div>)}
                     {activeAnnouncement && (<div className="flex flex-col gap-1"><div className="flex justify-between items-center"><span className={`text-[10px] font-bold uppercase ${activeAnnouncement.type==='FLAVOR'?'text-pink-400':'text-white'}`}>{activeAnnouncement.title}</span></div><p className="text-xs text-white">{activeAnnouncement.message}</p></div>)}
@@ -557,12 +569,18 @@ export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
                   {hasActed && <div className="text-center text-xs text-gray-500 mt-2">✅ JORNADA COMPLETADA</div>}
                   {!hasActed && !autoPilotAction && <div className="text-center text-[10px] text-red-400 mt-2 animate-pulse">⚠ SI NO ACTÚAS, PERDERÁS EL TURNO</div>}
                   
-                  {/* CHAT CIUDADANO */}
-                  <div className="mt-4 border border-gray-800 rounded bg-black p-2 h-40 overflow-y-auto custom-scrollbar">
-                      <p className="text-[9px] text-gray-500 text-center mb-2">--- CANAL CIUDADANO ---</p>
-                      {chatLog.map(c => (
-                          <div key={c.id} className="text-[10px] mb-1"><span className={c.isSystem?'text-purple-400 font-bold':'text-blue-400'}>{c.sender}:</span> <span className="text-gray-300">{c.text}</span></div>
-                      ))}
+                  {/* CHAT CIUDADANO CON INPUT */}
+                  <div className="mt-4 border border-gray-800 rounded bg-black p-2 flex flex-col gap-2">
+                      <p className="text-[9px] text-gray-500 text-center">--- CANAL CIUDADANO ---</p>
+                      <div className="h-32 overflow-y-auto custom-scrollbar flex flex-col-reverse">
+                          {chatLog.map(c => (
+                              <div key={c.id} className="text-[10px] mb-1"><span className={c.isSystem?'text-purple-400 font-bold':'text-blue-400'}>{c.sender}:</span> <span className="text-gray-300">{c.text}</span></div>
+                          ))}
+                      </div>
+                      <div className="flex gap-2">
+                          <input type="text" value={userMessage} onChange={(e)=>setUserMessage(e.target.value)} onKeyDown={(e)=>e.key==='Enter' && sendUserMessage()} placeholder="Escribe aquí..." className="flex-1 bg-gray-900 border border-gray-700 rounded px-2 py-1 text-[10px] text-white focus:outline-none focus:border-gold"/>
+                          <button onClick={sendUserMessage} className="bg-gold text-black px-3 py-1 rounded text-[10px] font-bold">Enviar</button>
+                      </div>
                   </div>
                </div>
             )}
