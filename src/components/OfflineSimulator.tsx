@@ -1,4 +1,3 @@
-
 import { useState, useEffect, useRef } from 'react';
 
 // --- TIPOS ---
@@ -107,7 +106,6 @@ export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
   const [unreadNews, setUnreadNews] = useState(false);
   const [newsFilter, setNewsFilter] = useState<NewsFilter>('ALL');
   
-  // CHAT INTERACTIVO
   const [chatLog, setChatLog] = useState<ChatMessage[]>([]);
   const [userMessage, setUserMessage] = useState("");
 
@@ -123,50 +121,52 @@ export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
 
   const [bots, setBots] = useState<BotPlayer[]>([]);
 
+  // REFERENCIA PARA LOGICA (Evita stale closures)
   const stateRef = useRef({ 
     bots, myReputation, myStash, publicSilo, hasActed, amIExpelled, 
     gamePhase, initialPop, amIBankrupt, myDaysBankrupt, autoPilotAction,
-    voteSession, activeBailout, activeAnnouncement, initialTotalWealth
+    voteSession, activeBailout, activeAnnouncement, initialTotalWealth,
+    currentCostOfLiving: 5 // Valor por defecto, se actualiza en render
   });
 
-  useEffect(() => {
-    stateRef.current = { 
-      bots, myReputation, myStash, publicSilo, hasActed, amIExpelled, 
-      gamePhase, initialPop, amIBankrupt, myDaysBankrupt, autoPilotAction,
-      voteSession, activeBailout, activeAnnouncement, initialTotalWealth
-    };
-  }, [bots, myReputation, myStash, publicSilo, hasActed, amIExpelled, gamePhase, initialPop, amIBankrupt, myDaysBankrupt, autoPilotAction, voteSession, activeBailout, activeAnnouncement, initialTotalWealth]);
-
-  // --- MOTOR ECONÓMICO (Versión Estabilizada) ---
+  // --- 1. MOTOR ECONÓMICO ---
   const calculateEconomy = (currentBots: BotPlayer[], pSilo: number, pStash: number, isExpelled: boolean, initWealth: number) => {
       const activeP = currentBots.filter(b => !b.isDead).length + (isExpelled ? 0 : 1);
       const totalPriv = currentBots.reduce((acc, b) => acc + b.stash, 0) + (isExpelled ? 0 : pStash);
       const currentTotal = pSilo + totalPriv;
 
-      // 1. Inflación (Muy suavizada con raíz cúbica)
+      // Inflación Suavizada
       const wealthRatio = currentTotal / (initWealth || 1);
-      const inflation = Math.pow(Math.max(0.1, wealthRatio), 0.4); // Más suave que sqrt
+      const inflation = Math.pow(Math.max(0.1, wealthRatio), 0.4); 
 
-      // 2. Escasez (Topeada)
+      // Escasez Topeada
       const safeSilo = activeP * 50;
-      const stress = Math.max(0, (safeSilo * 0.4) - pSilo); // Solo afecta si baja del 40%
-      const scarcity = 1 + ((stress / (safeSilo * 0.4 || 1)) * 1.5); // Max penalización x2.5
+      const stress = Math.max(0, (safeSilo * 0.4) - pSilo); 
+      const scarcity = 1 + ((stress / (safeSilo * 0.4 || 1)) * 1.5); 
 
-      // 3. Costo Base
       const rawCost = 5 * inflation * scarcity;
-      
-      // Limite de seguridad: El costo no debería subir instantáneamente a locuras
-      // Se mantiene estable.
       const cost = Math.max(1, Math.floor(rawCost));
 
       return { cost, activeP, totalPriv, currentTotal, safeSilo };
   };
 
+  // CÁLCULO EN RENDER (LO QUE VES)
   const ecoMetrics = calculateEconomy(bots, publicSilo, myStash, amIExpelled, initialTotalWealth);
   const costOfLiving = ecoMetrics.cost;
   const activePopulation = ecoMetrics.activeP;
 
-  // Stats Visuales
+  // Actualizar Ref con el costo VISUAL actual para que el cobro sea idéntico
+  useEffect(() => {
+      stateRef.current = { 
+        ...stateRef.current,
+        bots, myReputation, myStash, publicSilo, hasActed, amIExpelled, 
+        gamePhase, initialPop, amIBankrupt, myDaysBankrupt, autoPilotAction,
+        voteSession, activeBailout, activeAnnouncement, initialTotalWealth,
+        currentCostOfLiving: costOfLiving // <--- SINCRONIZACIÓN CLAVE
+      };
+  }, [bots, myReputation, myStash, publicSilo, hasActed, amIExpelled, gamePhase, initialPop, amIBankrupt, myDaysBankrupt, autoPilotAction, voteSession, activeBailout, activeAnnouncement, initialTotalWealth, costOfLiving]);
+
+  // Estadísticas Visuales
   const publicRatio = parseFloat(((publicSilo / (ecoMetrics.currentTotal || 1)) * 100).toFixed(1));
   const allStashes = [...bots.filter(b=>!b.isDead).map(b => b.stash), (amIExpelled ? 0 : myStash)].sort((a, b) => b - a);
   const top10Count = Math.ceil(allStashes.length * 0.1);
@@ -201,13 +201,9 @@ export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
 
   const handleNotificationTimeout = () => {
       const { voteSession, activeBailout, activeAnnouncement } = stateRef.current;
-      if (voteSession) {
-          finalizeVote('ABSTAIN'); 
-      } else if (activeBailout) {
-          setActiveBailout(null); 
-      } else if (activeAnnouncement) {
-          setActiveAnnouncement(null);
-      }
+      if (voteSession) finalizeVote('ABSTAIN'); 
+      else if (activeBailout) setActiveBailout(null); 
+      else if (activeAnnouncement) setActiveAnnouncement(null);
   };
 
   // --- ACCIONES ---
@@ -248,52 +244,59 @@ export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
   const processDayEnd = () => {
     const currentData = stateRef.current;
     
-    // 1. CALCULAR COSTO REAL
-    // Usamos el estado actual para que coincida con lo que vio el usuario
-    const ecoData = calculateEconomy(currentData.bots, currentData.publicSilo, currentData.myStash, currentData.amIExpelled, currentData.initialTotalWealth);
-    const dailyCost = ecoData.cost;
+    // 1. COBRO GARANTIZADO (Usamos el valor visual congelado)
+    const fixedDailyCost = currentData.currentCostOfLiving; 
 
     // Check Game Over
-    if (ecoData.activeP < (currentData.initialPop / 2)) {
+    const activeBotsCount = currentData.bots.filter(b => !b.isDead).length + (currentData.amIExpelled ? 0 : 1);
+    if (activeBotsCount < (currentData.initialPop / 2)) {
        setIsPaused(true); setGamePhase('GAMEOVER'); return;
     }
 
-    // Noticias & Chat Random (Frecuencia Ajustada)
-    if (Math.random() < 0.08) { // 8% prob diaria (aprox cada 12 días)
+    // Noticias & Chat Random (Baja Frecuencia)
+    if (Math.random() < 0.05) { // 5% prob diaria
         const randomNews = FLAVOR_TEXTS[Math.floor(Math.random() * FLAVOR_TEXTS.length)];
         setActiveAnnouncement({ title: "📰 NOTICIA FLASH", message: randomNews, type: 'FLAVOR' });
         setNotificationTimer(100);
         addNews(randomNews, 'FLAVOR');
     }
-    if (Math.random() < 0.4) {
+    if (Math.random() < 0.3) {
         const randomBot = currentData.bots[Math.floor(Math.random() * currentData.bots.length)];
         if(!randomBot.isDead) addChat(randomBot.name, BOT_COMMENTS[Math.floor(Math.random() * BOT_COMMENTS.length)]);
     }
 
     // 2. COBROS JUGADOR
+    let income = 0;
     if (!currentData.amIExpelled && !currentData.amIBankrupt) {
       if (currentData.hasActed) {
-         setMyStash(prev => prev - dailyCost);
+         // Ya actuó y ganó dinero antes. Solo cobramos.
+         setMyStash(prev => prev - fixedDailyCost);
+         // Calculamos income retrospectivamente solo para el log (aproximado)
+         income = 0; // Ya se sumó al clickear
       } else {
          if (currentData.autoPilotAction) {
             executePlayerAction(currentData.autoPilotAction, true); 
-            // Nota: executePlayerAction ya modifica el stash sumando ganancia. Aquí restamos el costo.
-            setMyStash(prev => prev - dailyCost);
+            setMyStash(prev => prev - fixedDailyCost);
+            income = 10; // Minimo aprox
          } else {
-            setMyStash(prev => prev - dailyCost);
+            setMyStash(prev => prev - fixedDailyCost);
             addNews("💤 Inactividad: Costo de vida cobrado.", "ALERT");
          }
       }
+      
+      // LOG FINANCIERO EN CHAT (Transparencia Total)
+      const gained = currentData.hasActed ? "(Ya sumado)" : (currentData.autoPilotAction ? "+Auto" : "0");
+      addChat("SISTEMA", `Resumen Día ${day}: Gastaste -$${fixedDailyCost}`, true);
     }
 
     // Desgaste
     setMyReputation(r => Math.max(0, r - 2)); 
     setBots(prev => prev.map(b => ({ ...b, reputation: Math.max(0, b.reputation - 2) })));
 
-    // Bancarrota check
-    if (!currentData.amIBankrupt && (stateRef.current.myStash - dailyCost) < 0 && !currentData.amIExpelled) {
+    // Bancarrota
+    if (!currentData.amIBankrupt && (stateRef.current.myStash - fixedDailyCost) < 0 && !currentData.amIExpelled) {
        setAmIBankrupt(true); setMyDaysBankrupt(0);
-       addNews("¡ESTÁS EN QUIEBRA!", 'BANKRUPTCY_ALERT', { id: 999, name: 'TÚ', debt: stateRef.current.myStash - dailyCost });
+       addNews("¡ESTÁS EN QUIEBRA!", 'BANKRUPTCY_ALERT', { id: 999, name: 'TÚ', debt: stateRef.current.myStash - fixedDailyCost });
     } else if (currentData.amIBankrupt) {
        setMyDaysBankrupt(days => {
            if (days >= 5) { setAmIExpelled(true); addNews("Has muerto de inanición.", 'DEATH'); return days; }
@@ -301,8 +304,8 @@ export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
        });
     }
 
-    // Turno Bots (Pasamos dailyCost calculado para que usen el mismo)
-    processBotsTurn(currentData, dailyCost);
+    // Turno Bots
+    processBotsTurn(currentData, fixedDailyCost);
 
     setDay(d => d + 1);
     setHasActed(false);
