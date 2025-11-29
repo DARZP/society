@@ -104,7 +104,6 @@ export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
   const [unreadNews, setUnreadNews] = useState(false);
   const [gameOverSort, setGameOverSort] = useState<SortType>('WEALTH');
   
-  // Widgets Editables
   const [editMode, setEditMode] = useState(false);
   const [widgets, setWidgets] = useState({ wealth: true, sentiment: true, gini: true, distribution: true, poverty: true });
 
@@ -118,7 +117,7 @@ export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
   // --- IA ---
   const [bots, setBots] = useState<BotPlayer[]>([]);
 
-  // REFERENCIA ACTUALIZADA (Evita stale closures en el intervalo)
+  // REFERENCIA
   const stateRef = useRef({ 
     bots, myReputation, myStash, publicSilo, hasActed, amIExpelled, 
     gamePhase, initialPop, amIBankrupt, myDaysBankrupt, autoPilotAction,
@@ -133,22 +132,20 @@ export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
     };
   }, [bots, myReputation, myStash, publicSilo, hasActed, amIExpelled, gamePhase, initialPop, amIBankrupt, myDaysBankrupt, autoPilotAction, voteSession, activeBailout, activeAnnouncement, initialTotalWealth]);
 
-  // --- 1. CÁLCULOS (Siempre al principio para que 'sentiment' exista) ---
+  // --- 1. CÁLCULOS ---
   const activeBots = bots.filter(b => !b.isDead);
   const activePopulation = activeBots.length + (amIExpelled ? 0 : 1);
   const totalPrivateWealth = activeBots.reduce((acc, bot) => acc + bot.stash, 0) + (amIExpelled ? 0 : myStash);
   const currentTotalWealth = publicSilo + totalPrivateWealth;
   
-  // Inflación y Costo
   const wealthRatio = currentTotalWealth / (initialTotalWealth || 1);
-  const monetaryInflation = Math.sqrt(Math.max(0.1, wealthRatio)); // Raíz cuadrada suaviza picos
+  const monetaryInflation = Math.sqrt(Math.max(0.1, wealthRatio));
   const safeSiloLevel = activePopulation * 50; 
   const siloStress = Math.max(0, (safeSiloLevel * 0.5) - publicSilo);
-  const scarcityPenalty = 1 + ((siloStress / (safeSiloLevel * 0.5 || 1)) * 2); // Max x3
+  const scarcityPenalty = 1 + ((siloStress / (safeSiloLevel * 0.5 || 1)) * 2);
   const rawCost = 5 * monetaryInflation * scarcityPenalty;
   const costOfLiving = Math.max(1, Math.floor(rawCost));
 
-  // Estadísticas
   const publicRatio = parseFloat(((publicSilo / (currentTotalWealth || 1)) * 100).toFixed(1));
   const allStashes = [...activeBots.map(b => b.stash), (amIExpelled ? 0 : myStash)].sort((a, b) => b - a);
   const top10Count = Math.ceil(allStashes.length * 0.1);
@@ -157,7 +154,6 @@ export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
   const povertyCount = activeBots.filter(b => b.stash < 20).length + (myStash < 20 ? 1 : 0);
   const povertyRate = ((povertyCount / (activePopulation || 1)) * 100).toFixed(0);
 
-  // Sentimiento Social
   const getSocialSentiment = () => {
     if (publicSilo < safeSiloLevel * 0.1) return { icon: '🔥', text: 'ANARQUÍA', color: 'text-red-600' };
     if (costOfLiving > 20) return { icon: '🤬', text: 'INFLACIÓN', color: 'text-orange-500' };
@@ -166,7 +162,7 @@ export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
   };
   const sentiment = getSocialSentiment();
 
-  // --- 2. FUNCIONES DE LÓGICA ---
+  // --- 2. HELPERS ---
   const addNews = (text: string, type: 'INFO' | 'ALERT' | 'BANKRUPTCY_ALERT' | 'DEATH' | 'DONATION' | 'FLAVOR' | 'EXPROPRIATION' = 'INFO', data?: any) => {
     setNewsLog(prev => [{ id: Date.now() + Math.random(), text: `Día ${day}: ${text}`, type, data, resolved: false }, ...prev].slice(0, 30));
     if (activeTab !== 'NEWS') setUnreadNews(true);
@@ -176,13 +172,55 @@ export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
     setNewsLog(prev => prev.map(item => item.id === newsId ? { ...item, resolved: true } : item));
   };
 
+  // --- 3. GESTIÓN DE TIEMPO Y TIMEOUTS ---
   const handleNotificationTimeout = () => {
       const { voteSession, activeBailout, activeAnnouncement } = stateRef.current;
-      if (voteSession) finalizeVote('ABSTAIN'); 
-      else if (activeBailout) setActiveBailout(null); 
-      else if (activeAnnouncement) setActiveAnnouncement(null);
+      
+      // Si el tiempo acaba, ES UN VOTO DE ABSTENCIÓN (La sociedad decide sin ti)
+      if (voteSession) {
+          finalizeVote('ABSTAIN'); 
+      } 
+      // Si ignoras rescate, se cierra
+      else if (activeBailout) {
+          setActiveBailout(null); 
+      } 
+      // Noticia flash se va
+      else if (activeAnnouncement) {
+          setActiveAnnouncement(null);
+      }
   };
 
+  useEffect(() => {
+    let tickInterval: any;
+    if (!isPaused && gamePhase === 'PLAYING') {
+      const tickRate = 50; 
+      tickInterval = setInterval(() => {
+        setDayProgress(prev => {
+          const increment = 0.5 * speedMultiplier; 
+          if (prev + increment >= 100) {
+            processDayEnd();
+            return 0;
+          }
+          return prev + increment;
+        });
+
+        if (stateRef.current.voteSession || stateRef.current.activeBailout || stateRef.current.activeAnnouncement) {
+            setNotificationTimer(prev => {
+                const decrement = 0.8 * speedMultiplier; 
+                if (prev - decrement <= 0) {
+                    // Importante: Ejecutar la lógica de cierre inmediatamente
+                    handleNotificationTimeout(); 
+                    return 0;
+                }
+                return prev - decrement;
+            });
+        }
+      }, tickRate);
+    }
+    return () => clearInterval(tickInterval);
+  }, [isPaused, gamePhase, speedMultiplier]);
+
+  // --- 4. LÓGICA DE JUEGO ---
   const executePlayerAction = (type: ActionType, isAuto: boolean) => {
     if (isAuto || (!hasActed && !amIExpelled && !amIBankrupt)) {
         if (type === 'COLLABORATE') {
@@ -190,14 +228,14 @@ export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
         } else if (type === 'PRIVATE') {
             setMyStash(s => s + 25); setMyStats(s => ({ ...s, private: s.private + 1 }));
         } else if (type === 'STEAL') {
-            const loot = publicSilo >= 40 ? 40 : publicSilo; // Protección: No puedes robar si no hay
+            const loot = publicSilo >= 40 ? 40 : publicSilo; 
             setPublicSilo(s => Math.max(0, s - 40)); 
             if (loot > 0) {
                  setMyStash(s => s + (loot + 20)); 
                  setMyReputation(r => Math.max(0, r - 10)); 
                  setMyStats(s => ({ ...s, stole: s.stole + 1 }));
             } else {
-                 setMyStash(s => s + 10); // Solo ingreso base si fallas
+                 setMyStash(s => s + 10); 
             }
         }
         if (!isAuto) setHasActed(true);
@@ -214,11 +252,9 @@ export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
       }
   };
 
-  // --- 3. MOTOR DE JUEGO (FIN DEL DÍA) ---
   const processDayEnd = () => {
     const currentData = stateRef.current;
     
-    // Check Game Over
     const aliveCount = currentData.bots.filter(b => !b.isDead).length + (currentData.amIExpelled ? 0 : 1);
     if (aliveCount < (currentData.initialPop / 2)) {
        setIsPaused(true);
@@ -226,7 +262,6 @@ export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
        return;
     }
 
-    // Noticias Random
     if (Math.random() < 0.25) { 
         const randomNews = FLAVOR_TEXTS[Math.floor(Math.random() * FLAVOR_TEXTS.length)];
         setActiveAnnouncement({ title: "📰 NOTICIA FLASH", message: randomNews, type: 'FLAVOR' });
@@ -234,7 +269,6 @@ export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
         addNews(randomNews, 'FLAVOR');
     }
 
-    // Cobros Jugador
     if (!currentData.amIExpelled && !currentData.amIBankrupt) {
       if (currentData.hasActed) {
          setMyStash(prev => prev - costOfLiving);
@@ -249,11 +283,9 @@ export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
       }
     }
 
-    // Desgaste
     setMyReputation(r => Math.max(0, r - 2)); 
     setBots(prev => prev.map(b => ({ ...b, reputation: Math.max(0, b.reputation - 2) })));
 
-    // Bancarrota check
     if (!currentData.amIBankrupt && stateRef.current.myStash < 0 && !currentData.amIExpelled) {
        setAmIBankrupt(true);
        setMyDaysBankrupt(0);
@@ -269,9 +301,7 @@ export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
        });
     }
 
-    // Turno Bots
     processBotsTurn(currentData);
-
     setDay(d => d + 1);
     setHasActed(false);
     setDayProgress(0); 
@@ -281,12 +311,10 @@ export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
       const activeList = [...currentData.bots.filter((b:any) => !b.isDead), { id: 999, name: 'TÚ', reputation: currentData.myReputation, isDead: currentData.amIExpelled }];
       const topRep = activeList.sort((a,b) => b.reputation - a.reputation)[0];
       
-      // Expropiación IA
       if (topRep && topRep.id !== 999 && currentData.publicSilo < (activePopulation * 20)) {
           if (Math.random() < 0.2) executeExpropriation(true, "Líder Bot");
       }
 
-      // Juicios IA
       const top3Bots = currentData.bots.filter((b:any) => !b.isDead).sort((a:any,b:any) => b.reputation - a.reputation).slice(0, 3);
       if (top3Bots.length > 0 && Math.random() < 0.10) { 
          const judge = top3Bots[Math.floor(Math.random() * top3Bots.length)];
@@ -297,7 +325,6 @@ export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
          }
       }
 
-      // IA Individual
       setBots(currentBots => currentBots.map(bot => {
          if (bot.isDead) return bot;
          if (bot.isBankrupt) {
@@ -354,7 +381,7 @@ export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
       }));
   };
 
-  // --- 4. EVENTOS (Expropiación, Juicios, Rescates) ---
+  // --- EVENTOS CORREGIDOS ---
   const executeExpropriation = (isBotAction: boolean, leaderName: string) => {
     const targetSilo = safeSiloLevel; 
     const deficit = targetSilo - stateRef.current.publicSilo;
@@ -389,24 +416,42 @@ export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
 
   const finalizeVote = (playerVote: 'YES' | 'NO' | 'ABSTAIN') => {
     if (!voteSession) return;
-    if (playerVote === 'ABSTAIN') {
-        addNews(`⚖️ Juicio anulado (Tiempo agotado).`, 'INFO');
-        setVoteSession(null);
-        return;
-    }
-
+    
+    // NOTA: Si es ABSTAIN, simplemente el jugador no suma, pero los bots deciden.
     const { bots } = stateRef.current;
-    let yes = playerVote === 'YES' ? 1 : 0; let no = playerVote === 'NO' ? 1 : 0;
+    let yes = playerVote === 'YES' ? 1 : 0; 
+    let no = playerVote === 'NO' ? 1 : 0;
+
     bots.filter(b => !b.isDead && b.id !== voteSession.targetId).forEach(bot => {
        const prejudice = (100 - voteSession.targetReputation) / 100;
        if (Math.random() < (prejudice - 0.1)) yes++; else no++;
     });
+
     if (yes > no) {
-      if (voteSession.targetId === 999) { setAmIExpelled(true); setMyStash(0); addNews(`🛑 EXPULSADO.`, 'ALERT'); }
-      else { setBots(prev => prev.map(b => b.id === voteSession.targetId ? { ...b, isDead: true, stash: 0 } : b)); addNews(`🔨 EXPULSADO: ${voteSession.targetName}.`, 'ALERT'); }
-      setPublicSilo(prev => prev + 50); 
-    } else { addNews(`🛡️ INOCENTE: ${voteSession.targetName}.`); }
-    setVoteSession(null);
+      // CULPABLE
+      let confiscated = 0;
+      if (voteSession.targetId === 999) { 
+          // JUGADOR EXPULSADO
+          setAmIExpelled(true); 
+          confiscated = stateRef.current.myStash;
+          setMyStash(0); 
+          addNews(`🛑 EXPULSADO. Se incautaron tus $${confiscated}.`, 'ALERT'); 
+      } else { 
+          // BOT EXPULSADO
+          const victim = bots.find(b => b.id === voteSession.targetId);
+          if (victim) confiscated = Math.max(0, victim.stash);
+          
+          setBots(prev => prev.map(b => b.id === voteSession.targetId ? { ...b, isDead: true, stash: 0 } : b)); 
+          addNews(`🔨 EXPULSADO: ${voteSession.targetName}. Se incautaron $${confiscated}.`, 'ALERT'); 
+      }
+      // AGREGAR AL SILO
+      setPublicSilo(prev => prev + confiscated); 
+    } else { 
+      // INOCENTE
+      addNews(`🛡️ INOCENTE: ${voteSession.targetName} (${yes} vs ${no}).`); 
+    }
+    
+    setVoteSession(null); // Cerrar notificación
   };
 
   const openBailoutModal = (item: NewsItem) => {
@@ -442,41 +487,9 @@ export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
      else { setBots(prev => prev.map(b => b.id === id ? { ...b, stash: finalStash, isBankrupt: false, daysBankrupt: 0 } : b)); }
   };
 
-  // --- 5. BUCLE DE TIEMPO (TICK) ---
-  useEffect(() => {
-    let tickInterval: any;
-    if (!isPaused && gamePhase === 'PLAYING') {
-      const tickRate = 50; 
-      tickInterval = setInterval(() => {
-        setDayProgress(prev => {
-          const increment = 0.5 * speedMultiplier; 
-          if (prev + increment >= 100) {
-            processDayEnd();
-            return 0;
-          }
-          return prev + increment;
-        });
-
-        if (stateRef.current.voteSession || stateRef.current.activeBailout || stateRef.current.activeAnnouncement) {
-            setNotificationTimer(prev => {
-                const decrement = 0.8 * speedMultiplier; 
-                if (prev - decrement <= 0) {
-                    handleNotificationTimeout();
-                    return 0;
-                }
-                return prev - decrement;
-            });
-        }
-      }, tickRate);
-    }
-    return () => clearInterval(tickInterval);
-  }, [isPaused, gamePhase, speedMultiplier]);
-
-  // --- START GAME ---
   const startGame = () => {
     const siloStart = botCount * 100;
     const initialWealth = (botCount * 70) + 60 + siloStart; 
-    
     const newBots: BotPlayer[] = Array.from({ length: botCount }).map((_, i) => ({
         id: i, name: generateName(), personality: ['ALTRUIST','GREEDY','CHAOTIC','OPPORTUNIST'][Math.floor(Math.random()*4)] as Personality,
         reputation: Math.floor(Math.random() * 30) + 40, stash: Math.floor(Math.random() * 40) + 30,
@@ -490,8 +503,6 @@ export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
   };
 
   // --- RENDER ---
-
-  // 1. SETUP
   if (gamePhase === 'SETUP') return (
      <div className="fixed inset-0 bg-black flex flex-col items-center justify-center p-6 font-pixel text-farm-green">
         <div className="w-full max-w-md border-0 sm:border-[16px] sm:border-gray-800 sm:rounded-[3rem] bg-gray-900 p-8 shadow-2xl relative overflow-hidden h-full sm:h-auto">
@@ -504,13 +515,11 @@ export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
      </div>
   );
 
-  // 2. GAME OVER
   if (gamePhase === 'GAMEOVER') {
     const allP = [...bots, { id: 999, name: 'TÚ', reputation: myReputation, stash: myStash, stats: myStats, isDead: amIExpelled, isMe: true }];
     const richest = [...allP].sort((a:any,b:any) => b.stash - a.stash)[0];
     const biggestThief = [...allP].sort((a:any,b:any) => b.stats.stole - a.stats.stole)[0];
     const mostCollaborative = [...allP].sort((a:any,b:any) => b.stats.collaborated - a.stats.collaborated)[0];
-    
     const sortedList = [...allP].sort((a:any, b:any) => {
        if (gameOverSort === 'WEALTH') return b.stash - a.stash;
        if (gameOverSort === 'THEFT') return b.stats.stole - a.stats.stole;
@@ -548,39 +557,21 @@ export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
     );
   }
 
-  // 3. MAIN GAME
   return (
     <div className="fixed inset-0 bg-gray-900 flex items-center justify-center p-0 sm:p-4 font-pixel select-none">
       <div className="relative w-full max-w-md h-full sm:h-[90vh] sm:max-h-[900px] bg-black sm:border-[12px] sm:border-gray-800 sm:rounded-[2.5rem] shadow-[0_0_50px_rgba(0,0,0,0.8)] overflow-hidden flex flex-col sm:ring-2 sm:ring-gray-700">
-         
-         {/* NOTCH */}
-         <div className="hidden sm:flex absolute top-0 left-1/2 transform -translate-x-1/2 w-28 h-5 bg-gray-800 rounded-b-xl z-50 justify-center items-center">
-            <div className="w-12 h-1 bg-gray-900 rounded-full"></div>
-         </div>
+         <div className="hidden sm:flex absolute top-0 left-1/2 transform -translate-x-1/2 w-28 h-5 bg-gray-800 rounded-b-xl z-50 justify-center items-center"><div className="w-12 h-1 bg-gray-900 rounded-full"></div></div>
 
-         {/* TOP BAR */}
          <div className="h-16 bg-gray-900 border-b border-soil flex items-center px-4 justify-between shrink-0 relative z-20 pt-2 sm:pt-4">
-            <div className="flex flex-col">
-               <span className="text-gold text-lg leading-none">DÍA {day}</span>
-               <span className="text-[10px] text-gray-400">Población: {activePopulation}</span>
-            </div>
-            <div className="flex-1 mx-3 flex flex-col justify-center">
-                <div className="w-full h-2 bg-gray-800 rounded-full overflow-hidden border border-gray-700">
-                   <div className={`h-full transition-all duration-100 ease-linear ${dayProgress > 80 ? 'bg-red-500' : 'bg-blue-400'}`} style={{ width: `${dayProgress}%` }} />
-                </div>
-            </div>
-            <div className="text-right">
-                <span className={`block text-xl leading-none ${amIBankrupt ? 'text-red-500 animate-pulse' : 'text-farm-green'}`}>${myStash}</span>
-                <span className="text-[10px] text-danger">COSTO: -{costOfLiving}</span>
-            </div>
+            <div className="flex flex-col"><span className="text-gold text-lg leading-none">DÍA {day}</span><span className="text-[10px] text-gray-400">Población: {activePopulation}</span></div>
+            <div className="flex-1 mx-3 flex flex-col justify-center"><div className="w-full h-2 bg-gray-800 rounded-full overflow-hidden border border-gray-700"><div className={`h-full transition-all duration-100 ease-linear ${dayProgress > 80 ? 'bg-red-500' : 'bg-blue-400'}`} style={{ width: `${dayProgress}%` }} /></div></div>
+            <div className="text-right"><span className={`block text-xl leading-none ${amIBankrupt ? 'text-red-500 animate-pulse' : 'text-farm-green'}`}>${myStash}</span><span className="text-[10px] text-danger">COSTO: -{costOfLiving}</span></div>
          </div>
 
-         {/* DYNAMIC ISLAND */}
          {(voteSession?.isOpen || activeBailout || activeAnnouncement) && (
             <div className="absolute top-16 left-0 right-0 z-40 p-2 animate-slide-down">
                 <div className={`bg-gray-800 border-2 rounded-xl shadow-2xl p-3 overflow-hidden ${activeAnnouncement?.type === 'FLAVOR' ? 'border-pink-500' : activeAnnouncement?.type === 'EXPROPRIATION' ? 'border-red-500' : 'border-gold'}`}>
                     <div className={`absolute top-0 left-0 h-1 transition-all duration-75 ease-linear ${activeAnnouncement?.type === 'FLAVOR' ? 'bg-pink-500' : 'bg-gold'}`} style={{ width: `${notificationTimer}%` }}></div>
-
                     {voteSession && (
                         <div className="flex flex-col gap-2">
                              <div className="flex justify-between items-center"><span className="text-[10px] text-gold font-bold uppercase">🚨 JUICIO</span></div>
@@ -592,7 +583,6 @@ export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
                              </div>
                         </div>
                     )}
-
                     {activeBailout && (
                         <div className="flex flex-col gap-2">
                              <div className="flex justify-between items-center"><span className="text-[10px] text-gold font-bold uppercase">🚑 SOS DEUDA</span></div>
@@ -603,12 +593,9 @@ export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
                              </div>
                         </div>
                     )}
-
                     {activeAnnouncement && (
                         <div className="flex flex-col gap-1">
-                             <div className="flex justify-between items-center">
-                                 <span className={`text-[10px] font-bold uppercase ${activeAnnouncement.type==='FLAVOR'?'text-pink-400':'text-red-400'}`}>{activeAnnouncement.title}</span>
-                             </div>
+                             <div className="flex justify-between items-center"><span className={`text-[10px] font-bold uppercase ${activeAnnouncement.type==='FLAVOR'?'text-pink-400':'text-red-400'}`}>{activeAnnouncement.title}</span></div>
                              <p className="text-xs text-white">{activeAnnouncement.message}</p>
                         </div>
                     )}
@@ -616,7 +603,6 @@ export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
             </div>
          )}
 
-         {/* MAIN CONTENT AREA */}
          <div className="flex-1 overflow-y-auto relative bg-gray-950 p-2 scrollbar-hide pb-32">
             {amIExpelled && <div className="p-4 bg-red-900 text-white text-center border-2 border-red-500 mb-4 animate-pulse">🛑 EXPULSADO</div>}
             {amIBankrupt && <div className="p-4 bg-yellow-900 text-yellow-200 text-center border-2 border-yellow-500 mb-4">⚠ CUENTA CONGELADA</div>}
@@ -633,15 +619,9 @@ export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
                         <p className="text-2xl text-blue-400">{myReputation}</p>
                      </div>
                   </div>
-
                   <button onClick={donateToSilo} disabled={hasActed || myStash < 20} className="w-full py-2 bg-blue-900 border border-blue-500 text-blue-200 text-xs rounded hover:bg-blue-800 disabled:opacity-50">💝 DONAR AL PUEBLO (-$20 / +Rep)</button>
-
                   <div className="flex flex-col gap-3">
-                     {[
-                       { id: 'COLLABORATE', label: 'COLABORAR', sub: '+25 Silo / +10 Tú', color: 'bg-farm-green', text: 'text-black', border: 'border-green-600' },
-                       { id: 'PRIVATE', label: 'TRABAJO PRIVADO', sub: '+0 Silo / +25 Tú', color: 'bg-gold', text: 'text-black', border: 'border-yellow-600' },
-                       { id: 'STEAL', label: 'ROBAR RECURSOS', sub: `-${publicSilo>=40?40:publicSilo} Silo / +${publicSilo>=40?60:'10 (Vacío)'} Tú`, color: 'bg-red-600', text: 'text-white', border: 'border-red-800' }
-                     ].map((action) => (
+                     {[ { id: 'COLLABORATE', label: 'COLABORAR', sub: '+25 Silo / +10 Tú', color: 'bg-farm-green', text: 'text-black', border: 'border-green-600' }, { id: 'PRIVATE', label: 'TRABAJO PRIVADO', sub: '+0 Silo / +25 Tú', color: 'bg-gold', text: 'text-black', border: 'border-yellow-600' }, { id: 'STEAL', label: 'ROBAR RECURSOS', sub: `-${publicSilo>=40?40:publicSilo} Silo / +${publicSilo>=40?60:'10 (Vacío)'} Tú`, color: 'bg-red-600', text: 'text-white', border: 'border-red-800' } ].map((action) => (
                        <div key={action.id} className={`flex items-stretch bg-gray-900 border ${action.border} rounded-lg overflow-hidden relative transition-transform active:scale-95 shadow-lg`}>
                           <button onClick={() => handleManualAction(action.id as ActionType)} disabled={hasActed || amIBankrupt} className={`flex-1 p-4 text-left hover:brightness-110 ${hasActed ? 'opacity-40 grayscale' : ''}`}>
                              <div className={`text-sm font-bold ${action.id === 'STEAL' ? 'text-red-400' : action.id === 'PRIVATE' ? 'text-yellow-400' : 'text-green-400'}`}>{action.label}</div>
@@ -649,9 +629,7 @@ export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
                           </button>
                           <div className="w-16 bg-black flex flex-col items-center justify-center border-l border-gray-700">
                              <span className="text-[8px] text-gray-500 mb-1">AUTO</span>
-                             <button onClick={() => setAutoPilotAction(prev => prev === action.id ? null : action.id as ActionType)} className={`w-8 h-4 rounded-full relative transition-colors ${autoPilotAction === action.id ? action.color : 'bg-gray-700'}`}>
-                                <div className={`absolute top-0.5 w-3 h-3 bg-white rounded-full transition-all ${autoPilotAction === action.id ? 'right-0.5' : 'left-0.5'}`}></div>
-                             </button>
+                             <button onClick={() => setAutoPilotAction(prev => prev === action.id ? null : action.id as ActionType)} className={`w-8 h-4 rounded-full relative transition-colors ${autoPilotAction === action.id ? action.color : 'bg-gray-700'}`}><div className={`absolute top-0.5 w-3 h-3 bg-white rounded-full transition-all ${autoPilotAction === action.id ? 'right-0.5' : 'left-0.5'}`}></div></button>
                           </div>
                           {hasActed && !amIBankrupt && <div className="absolute inset-0 bg-black bg-opacity-50 pointer-events-none" />}
                        </div>
@@ -664,64 +642,14 @@ export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
 
             {activeTab === 'STATS' && (
                 <div className="space-y-4">
-                    <div className="flex justify-between items-center mb-2">
-                      <h2 className="text-gray-500 text-xs">PANEL DE DATOS</h2>
-                      <button onClick={() => setEditMode(!editMode)} className={`text-xs px-2 py-1 rounded ${editMode ? 'bg-gold text-black' : 'bg-gray-800 text-gray-400'}`}>✏️ EDITAR</button>
-                    </div>
-
+                    <div className="flex justify-between items-center mb-2"><h2 className="text-gray-500 text-xs">PANEL DE DATOS</h2><button onClick={() => setEditMode(!editMode)} className={`text-xs px-2 py-1 rounded ${editMode ? 'bg-gold text-black' : 'bg-gray-800 text-gray-400'}`}>✏️ EDITAR</button></div>
                     <div className="grid grid-cols-2 gap-3">
-                        {widgets.wealth && (
-                            <div className={`bg-gray-800 p-4 rounded text-center col-span-1 relative ${editMode?'animate-pulse border border-gold':''}`}>
-                                {editMode && <button onClick={()=>setWidgets(w=>({...w, wealth:false}))} className="absolute top-0 right-0 bg-red-500 text-white w-5 h-5 text-xs">x</button>}
-                                <h3 className="text-gray-400 text-[10px] mb-2">CALIDAD DE VIDA</h3>
-                                <div className="text-4xl mb-1">{costOfLiving > 30 ? '🤬' : costOfLiving > 15 ? '😨' : '😎'}</div>
-                                <p className="text-xs text-danger">Cost: ${costOfLiving}</p>
-                            </div>
-                        )}
-                        {widgets.sentiment && (
-                            <div className={`bg-gray-800 p-4 rounded text-center col-span-1 relative ${editMode?'animate-pulse border border-gold':''}`}>
-                                {editMode && <button onClick={()=>setWidgets(w=>({...w, sentiment:false}))} className="absolute top-0 right-0 bg-red-500 text-white w-5 h-5 text-xs">x</button>}
-                                <h3 className="text-gray-400 text-[10px] mb-2">CLIMA SOCIAL</h3>
-                                <div className="text-4xl mb-1">{sentiment.icon}</div>
-                                <p className={`text-xs ${sentiment.color}`}>{sentiment.text}</p>
-                            </div>
-                        )}
-                        {widgets.gini && (
-                            <div className={`bg-gray-800 p-4 rounded col-span-2 relative ${editMode?'animate-pulse border border-gold':''}`}>
-                                {editMode && <button onClick={()=>setWidgets(w=>({...w, gini:false}))} className="absolute top-0 right-0 bg-red-500 text-white w-5 h-5 text-xs">x</button>}
-                                <p className="text-[10px] text-gray-400 uppercase mb-1">GINI (Riqueza Top 10%):</p>
-                                <div className="w-full bg-gray-700 h-3 rounded-full overflow-hidden relative"><div className="h-full bg-gold absolute left-0" style={{width: `${inequalityPercentage}%`}}></div></div>
-                                <p className="text-right text-xs text-gold mt-1">{inequalityPercentage}%</p>
-                            </div>
-                        )}
-                        {widgets.distribution && (
-                           <div className={`bg-gray-800 p-4 rounded col-span-2 relative ${editMode?'animate-pulse border border-gold':''}`}>
-                              {editMode && <button onClick={()=>setWidgets(w=>({...w, distribution:false}))} className="absolute top-0 right-0 bg-red-500 text-white w-5 h-5 text-xs">x</button>}
-                              <p className="text-[10px] text-gray-400 uppercase mb-2">DISTRIBUCIÓN TOTAL</p>
-                              <div className="flex h-6 w-full rounded overflow-hidden">
-                                  <div style={{width: `${publicRatio}%`}} className="bg-farm-green flex items-center justify-center text-[9px] text-black">PÚBLICO {publicRatio}%</div>
-                                  <div style={{width: `${100-publicRatio}%`}} className="bg-gold flex items-center justify-center text-[9px] text-black">PRIVADO</div>
-                              </div>
-                           </div>
-                        )}
-                        {widgets.poverty && (
-                           <div className={`bg-gray-800 p-4 rounded col-span-2 relative ${editMode?'animate-pulse border border-gold':''}`}>
-                              {editMode && <button onClick={()=>setWidgets(w=>({...w, poverty:false}))} className="absolute top-0 right-0 bg-red-500 text-white w-5 h-5 text-xs">x</button>}
-                              <div className="flex justify-between items-center">
-                                 <div><p className="text-[10px] text-gray-400 uppercase">INDICE DE POBREZA</p><p className="text-xs text-gray-500">Bots con &lt; $20</p></div>
-                                 <p className={`text-2xl font-bold ${parseInt(povertyRate) > 30 ? 'text-red-500' : 'text-white'}`}>{povertyRate}%</p>
-                              </div>
-                           </div>
-                        )}
-                        {editMode && (
-                             <div className="col-span-2 flex gap-2 flex-wrap justify-center border-t border-gray-700 pt-4">
-                                 {!widgets.wealth && <button onClick={()=>setWidgets(w=>({...w, wealth:true}))} className="bg-gray-700 px-2 py-1 text-xs text-green-400">+ CALIDAD</button>}
-                                 {!widgets.sentiment && <button onClick={()=>setWidgets(w=>({...w, sentiment:true}))} className="bg-gray-700 px-2 py-1 text-xs text-green-400">+ CLIMA</button>}
-                                 {!widgets.gini && <button onClick={()=>setWidgets(w=>({...w, gini:true}))} className="bg-gray-700 px-2 py-1 text-xs text-green-400">+ GINI</button>}
-                                 {!widgets.distribution && <button onClick={()=>setWidgets(w=>({...w, distribution:true}))} className="bg-gray-700 px-2 py-1 text-xs text-green-400">+ DISTRIB.</button>}
-                                 {!widgets.poverty && <button onClick={()=>setWidgets(w=>({...w, poverty:true}))} className="bg-gray-700 px-2 py-1 text-xs text-green-400">+ POBREZA</button>}
-                             </div>
-                        )}
+                        {widgets.wealth && (<div className={`bg-gray-800 p-4 rounded text-center col-span-1 relative ${editMode?'animate-pulse border border-gold':''}`}>{editMode && <button onClick={()=>setWidgets(w=>({...w, wealth:false}))} className="absolute top-0 right-0 bg-red-500 text-white w-5 h-5 text-xs">x</button>}<h3 className="text-gray-400 text-[10px] mb-2">CALIDAD DE VIDA</h3><div className="text-4xl mb-1">{costOfLiving > 30 ? '🤬' : costOfLiving > 15 ? '😨' : '😎'}</div><p className="text-xs text-danger">Cost: ${costOfLiving}</p></div>)}
+                        {widgets.sentiment && (<div className={`bg-gray-800 p-4 rounded text-center col-span-1 relative ${editMode?'animate-pulse border border-gold':''}`}>{editMode && <button onClick={()=>setWidgets(w=>({...w, sentiment:false}))} className="absolute top-0 right-0 bg-red-500 text-white w-5 h-5 text-xs">x</button>}<h3 className="text-gray-400 text-[10px] mb-2">CLIMA SOCIAL</h3><div className="text-4xl mb-1">{sentiment.icon}</div><p className={`text-xs ${sentiment.color}`}>{sentiment.text}</p></div>)}
+                        {widgets.gini && (<div className={`bg-gray-800 p-4 rounded col-span-2 relative ${editMode?'animate-pulse border border-gold':''}`}>{editMode && <button onClick={()=>setWidgets(w=>({...w, gini:false}))} className="absolute top-0 right-0 bg-red-500 text-white w-5 h-5 text-xs">x</button>}<p className="text-[10px] text-gray-400 uppercase mb-1">GINI (Riqueza Top 10%):</p><div className="w-full bg-gray-700 h-3 rounded-full overflow-hidden relative"><div className="h-full bg-gold absolute left-0" style={{width: `${inequalityPercentage}%`}}></div></div><p className="text-right text-xs text-gold mt-1">{inequalityPercentage}%</p></div>)}
+                        {widgets.distribution && (<div className={`bg-gray-800 p-4 rounded col-span-2 relative ${editMode?'animate-pulse border border-gold':''}`}>{editMode && <button onClick={()=>setWidgets(w=>({...w, distribution:false}))} className="absolute top-0 right-0 bg-red-500 text-white w-5 h-5 text-xs">x</button>}<p className="text-[10px] text-gray-400 uppercase mb-2">DISTRIBUCIÓN TOTAL</p><div className="flex h-6 w-full rounded overflow-hidden"><div style={{width: `${publicRatio}%`}} className="bg-farm-green flex items-center justify-center text-[9px] text-black">PÚBLICO {publicRatio}%</div><div style={{width: `${100-publicRatio}%`}} className="bg-gold flex items-center justify-center text-[9px] text-black">PRIVADO</div></div></div>)}
+                        {widgets.poverty && (<div className={`bg-gray-800 p-4 rounded col-span-2 relative ${editMode?'animate-pulse border border-gold':''}`}>{editMode && <button onClick={()=>setWidgets(w=>({...w, poverty:false}))} className="absolute top-0 right-0 bg-red-500 text-white w-5 h-5 text-xs">x</button>}<div className="flex justify-between items-center"><div><p className="text-[10px] text-gray-400 uppercase">INDICE DE POBREZA</p><p className="text-xs text-gray-500">Bots con &lt; $20</p></div><p className={`text-2xl font-bold ${parseInt(povertyRate) > 30 ? 'text-red-500' : 'text-white'}`}>{povertyRate}%</p></div></div>)}
+                        {editMode && (<div className="col-span-2 flex gap-2 flex-wrap justify-center border-t border-gray-700 pt-4">{!widgets.wealth && <button onClick={()=>setWidgets(w=>({...w, wealth:true}))} className="bg-gray-700 px-2 py-1 text-xs text-green-400">+ CALIDAD</button>}{!widgets.sentiment && <button onClick={()=>setWidgets(w=>({...w, sentiment:true}))} className="bg-gray-700 px-2 py-1 text-xs text-green-400">+ CLIMA</button>}{!widgets.gini && <button onClick={()=>setWidgets(w=>({...w, gini:true}))} className="bg-gray-700 px-2 py-1 text-xs text-green-400">+ GINI</button>}{!widgets.distribution && <button onClick={()=>setWidgets(w=>({...w, distribution:true}))} className="bg-gray-700 px-2 py-1 text-xs text-green-400">+ DISTRIB.</button>}{!widgets.poverty && <button onClick={()=>setWidgets(w=>({...w, poverty:true}))} className="bg-gray-700 px-2 py-1 text-xs text-green-400">+ POBREZA</button>}</div>)}
                     </div>
                 </div>
             )}
@@ -764,37 +692,20 @@ export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
             )}
          </div>
 
-         {/* SPEED CONTROL */}
          <div className="absolute bottom-[4.5rem] right-4 z-30 flex gap-1 bg-black bg-opacity-90 px-3 py-2 rounded-full border border-gray-700 backdrop-blur-sm shadow-xl">
              {[0, 0.5, 1, 3, 5, 10].map(s => (
                  <button key={s} onClick={() => { setSpeedMultiplier(s); setIsPaused(s === 0); }} className={`w-6 h-6 rounded-full text-[8px] flex items-center justify-center font-bold transition-all ${speedMultiplier === s && !isPaused ? 'bg-farm-green text-black scale-110' : 'bg-gray-800 text-gray-400 hover:bg-gray-700'}`}>{s === 0 ? '⏸' : `x${s}`}</button>
              ))}
          </div>
 
-         {/* DOCK */}
          <div className="h-16 bg-gray-900 border-t border-soil shrink-0 flex items-center justify-around z-30 pb-safe sm:rounded-b-[2rem]">
-            {[
-              { id: 'ACTIONS', icon: '⚡', label: 'ACCIONES' },
-              { id: 'STATS', icon: '📊', label: 'DATOS' },
-              { id: 'NEWS', icon: '📡', label: 'RED', alert: unreadNews },
-              { id: 'RANKING', icon: '🏆', label: 'RANGO' },
-              { id: 'LEADER', icon: '👑', label: 'MANDO', hidden: ![...bots, {id:999,reputation:myReputation} as any].sort((a,b)=>b.reputation-a.reputation).slice(0,3).some(p=>p.id===999) }
-            ].map(tab => !tab.hidden && (
-               <button 
-                  key={tab.id} 
-                  onClick={() => { setActiveTab(tab.id as TabType); if(tab.id === 'NEWS') setUnreadNews(false); }} 
-                  className={`flex flex-col items-center justify-center w-full h-full transition-colors ${activeTab === tab.id ? 'text-farm-green bg-gray-800' : 'text-gray-500'}`}
-               >
-                  <div className="relative">
-                     <span className="text-xl mb-1 block">{tab.icon}</span>
-                     {tab.alert && <span className="absolute -top-1 -right-1 w-2 h-2 bg-red-500 rounded-full animate-pulse"></span>}
-                  </div>
-                  <span className="text-[9px] font-terminal">{tab.label}</span>
+            {[ { id: 'ACTIONS', icon: '⚡', label: 'ACCIONES' }, { id: 'STATS', icon: '📊', label: 'DATOS' }, { id: 'NEWS', icon: '📡', label: 'RED', alert: unreadNews }, { id: 'RANKING', icon: '🏆', label: 'RANGO' }, { id: 'LEADER', icon: '👑', label: 'MANDO', hidden: ![...bots, {id:999,reputation:myReputation} as any].sort((a,b)=>b.reputation-a.reputation).slice(0,3).some(p=>p.id===999) } ].map(tab => !tab.hidden && (
+               <button key={tab.id} onClick={() => { setActiveTab(tab.id as TabType); if(tab.id === 'NEWS') setUnreadNews(false); }} className={`flex flex-col items-center justify-center w-full h-full transition-colors ${activeTab === tab.id ? 'text-farm-green bg-gray-800' : 'text-gray-500'}`}>
+                  <div className="relative"><span className="text-xl mb-1 block">{tab.icon}</span>{tab.alert && <span className="absolute -top-1 -right-1 w-2 h-2 bg-red-500 rounded-full animate-pulse"></span>}</div><span className="text-[9px] font-terminal">{tab.label}</span>
                </button>
             ))}
          </div>
 
-         {/* MODAL SUSPECTS */}
          {showSuspects && (
            <div className="absolute inset-0 z-50 bg-black bg-opacity-90 p-8 flex flex-col animate-fade-in">
                <h2 className="text-xl text-danger mb-4 text-center">SELECCIONAR ACUSADO</h2>
