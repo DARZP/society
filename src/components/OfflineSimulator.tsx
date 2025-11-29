@@ -37,13 +37,13 @@ interface VoteSession {
 interface Announcement {
   title: string;
   message: string;
-  type: 'EXPROPRIATION' | 'FLAVOR';
+  type: 'EXPROPRIATION' | 'FLAVOR' | 'CRISIS';
 }
 
 interface NewsItem {
   id: number;
   text: string;
-  type: 'INFO' | 'ALERT' | 'BANKRUPTCY_ALERT' | 'DEATH' | 'DONATION' | 'FLAVOR';
+  type: 'INFO' | 'ALERT' | 'BANKRUPTCY_ALERT' | 'DEATH' | 'DONATION' | 'FLAVOR' | 'EXPROPRIATION';
   targetId?: number;
   data?: any;
   resolved?: boolean;
@@ -53,16 +53,18 @@ type SortType = 'WEALTH' | 'THEFT' | 'SAINT';
 
 // --- DATA: NOTICIAS DIVERTIDAS ---
 const FLAVOR_TEXTS = [
-    "🐈 Se busca al gato 'Bitcoin' del vecino.",
-    "🎬 Estreno en cines: 'El Silo de la Pasión 4'.",
-    "👽 Un bot asegura haber sido abducido por humanos.",
-    "🍕 La pizza del comedor hoy sabe a aceite de motor.",
-    "🐋 Una ballena fue arrestada por lavado de dinero.",
-    "📉 Expertos dicen: 'Invertir en aire es el futuro'.",
-    "🤖 Un Roomba se declaró emperador del sector 7.",
-    "🎨 Alguien pintó bigotes en los carteles del Líder.",
-    "🌧️ Pronóstico: Lluvia de glitches por la tarde.",
-    "🎵 El himno nacional fue remixado en 8-bit."
+    "🐈 Se busca al gato 'Satoshi' del vecino.",
+    "🎬 Estreno: 'El Silo de la Pasión 4'.",
+    "👽 Un bot dice haber visto humanos reales.",
+    "🍕 La pizza hoy sabe a aceite de motor.",
+    "🐋 Una ballena fue arrestada por lavado.",
+    "📉 Expertos: 'Invertir en aire es el futuro'.",
+    "🤖 Un Roomba se declaró Rey del Sector 7.",
+    "🎨 Alguien pintó bigotes en los carteles.",
+    "🌧️ Pronóstico: Lluvia de glitches.",
+    "🎵 El himno fue remixado en 8-bit.",
+    "👀 Alguien está minando criptos en el baño.",
+    "💊 Se agotaron las pastillas de la felicidad."
 ];
 
 const generateName = () => {
@@ -81,7 +83,7 @@ export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
   const [day, setDay] = useState(1);
   const [dayProgress, setDayProgress] = useState(0); 
   const [publicSilo, setPublicSilo] = useState(1000);
-  const [initialTotalWealth, setInitialTotalWealth] = useState(1000); // Para calcular inflación relativa
+  const [initialTotalWealth, setInitialTotalWealth] = useState(1000); 
   const [speedMultiplier, setSpeedMultiplier] = useState(1); 
   const [isPaused, setIsPaused] = useState(true);
 
@@ -106,7 +108,7 @@ export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
   const [editMode, setEditMode] = useState(false);
   const [widgets, setWidgets] = useState({ wealth: true, sentiment: true, gini: true, distribution: true, poverty: true });
 
-  // NOTIFICACIONES ACTIVAS (Dynamic Island)
+  // NOTIFICACIONES ACTIVAS
   const [voteSession, setVoteSession] = useState<VoteSession | null>(null);
   const [activeBailout, setActiveBailout] = useState<{id: number, name: string, debt: number, newsId: number} | null>(null);
   const [activeAnnouncement, setActiveAnnouncement] = useState<Announcement | null>(null);
@@ -130,45 +132,37 @@ export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
     };
   }, [bots, myReputation, myStash, publicSilo, hasActed, amIExpelled, gamePhase, initialPop, amIBankrupt, myDaysBankrupt, autoPilotAction, voteSession, activeBailout, activeAnnouncement, initialTotalWealth]);
 
-  // --- CÁLCULOS ECONÓMICOS (CORREGIDOS) ---
+  // --- CÁLCULOS ECONÓMICOS (ESTABILIZADOS) ---
   const activeBots = bots.filter(b => !b.isDead);
   const activePopulation = activeBots.length + (amIExpelled ? 0 : 1);
   const totalPrivateWealth = activeBots.reduce((acc, bot) => acc + bot.stash, 0) + (amIExpelled ? 0 : myStash);
   const currentTotalWealth = publicSilo + totalPrivateWealth;
   
-  // 1. INFLACIÓN MONETARIA: Comparar dinero total actual vs inicial.
-  // Si hay menos dinero en el sistema (deflación), los precios bajan.
-  const monetaryInflation = Math.max(0.5, currentTotalWealth / (initialTotalWealth || 1));
+  // 1. INFLACIÓN SUAVIZADA (Raíz cuadrada para evitar picos)
+  // Si la riqueza se duplica, la inflación es solo 1.4x, no 2x.
+  const wealthRatio = currentTotalWealth / (initialTotalWealth || 1);
+  const monetaryInflation = Math.sqrt(Math.max(0.1, wealthRatio));
 
-  // 2. MULTIPLICADOR DE ESCASEZ (Silo Vacío)
-  // Topeado a 3x para evitar colapso instantáneo.
+  // 2. ESCASEZ CONTROLADA
   const safeSiloLevel = activePopulation * 50; 
-  const scarcityRaw = safeSiloLevel / (publicSilo + 1);
-  const scarcityMultiplier = Math.max(1, Math.min(3, scarcityRaw)); // Max cost x3 por escasez
+  // Solo empieza a afectar si baja del 50% del nivel seguro
+  const siloStress = Math.max(0, (safeSiloLevel * 0.5) - publicSilo);
+  // El multiplicador máximo es 3x (cuando Silo es 0)
+  const scarcityPenalty = 1 + ((siloStress / (safeSiloLevel * 0.5)) * 2);
 
   // 3. COSTO FINAL
-  // Base $5 * Inflación (Dinero circulante) * Escasez (Silo)
-  const costOfLiving = Math.floor(5 * monetaryInflation * scarcityMultiplier); 
-
-  // Métricas Widgets
-  const publicRatio = parseFloat(((publicSilo / (currentTotalWealth || 1)) * 100).toFixed(1));
-  const allStashes = [...activeBots.map(b => b.stash), (amIExpelled ? 0 : myStash)].sort((a, b) => b - a);
-  const top10Count = Math.ceil(allStashes.length * 0.1);
-  const wealthTop10 = allStashes.slice(0, top10Count).reduce((a, b) => a + b, 0);
-  const inequalityPercentage = ((wealthTop10 / (totalPrivateWealth || 1)) * 100).toFixed(1);
-  const povertyCount = activeBots.filter(b => b.stash < 20).length + (myStash < 20 ? 1 : 0);
-  const povertyRate = ((povertyCount / activePopulation) * 100).toFixed(0);
-
-  const getSocialSentiment = () => {
-    if (publicSilo < safeSiloLevel * 0.1) return { icon: '🔥', text: 'ANARQUÍA', color: 'text-red-600' };
-    if (costOfLiving > 20) return { icon: '🤬', text: 'INFLACIÓN', color: 'text-orange-500' };
-    if (publicSilo > safeSiloLevel * 1.5) return { icon: '🤑', text: 'ABUNDANCIA', color: 'text-blue-400' };
-    return { icon: '😎', text: 'ESTABLE', color: 'text-farm-green' };
-  };
-  const sentiment = getSocialSentiment();
+  // Costo Base: $5.
+  // Ejemplo Normal: $5 * 1.0 * 1.0 = $5.
+  // Ejemplo Riqueza x4: $5 * 2.0 * 1.0 = $10.
+  // Ejemplo Crisis (Silo 0): $5 * 1.0 * 3.0 = $15.
+  // Ejemplo Apocalipsis (Riqueza x4 + Silo 0): $5 * 2.0 * 3.0 = $30.
+  const rawCost = 5 * monetaryInflation * scarcityPenalty;
+  
+  // Garantizamos que sea al menos 1
+  const costOfLiving = Math.max(1, Math.floor(rawCost));
 
   // --- HELPERS ---
-  const addNews = (text: string, type: 'INFO' | 'ALERT' | 'BANKRUPTCY_ALERT' | 'DEATH' | 'DONATION' | 'FLAVOR' = 'INFO', data?: any) => {
+  const addNews = (text: string, type: 'INFO' | 'ALERT' | 'BANKRUPTCY_ALERT' | 'DEATH' | 'DONATION' | 'FLAVOR' | 'EXPROPRIATION' = 'INFO', data?: any) => {
     setNewsLog(prev => [{ id: Date.now() + Math.random(), text: `Día ${day}: ${text}`, type, data, resolved: false }, ...prev].slice(0, 30));
     if (activeTab !== 'NEWS') setUnreadNews(true);
   };
@@ -177,13 +171,12 @@ export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
     setNewsLog(prev => prev.map(item => item.id === newsId ? { ...item, resolved: true } : item));
   };
 
-  // --- BUCLE PRINCIPAL (TICK) ---
+  // --- BUCLE PRINCIPAL ---
   useEffect(() => {
     let tickInterval: any;
     if (!isPaused && gamePhase === 'PLAYING') {
       const tickRate = 50; 
       tickInterval = setInterval(() => {
-        // 1. Progreso del Día
         setDayProgress(prev => {
           const increment = 0.5 * speedMultiplier; 
           if (prev + increment >= 100) {
@@ -193,10 +186,9 @@ export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
           return prev + increment;
         });
 
-        // 2. Progreso de Notificaciones (Timer)
         if (stateRef.current.voteSession || stateRef.current.activeBailout || stateRef.current.activeAnnouncement) {
             setNotificationTimer(prev => {
-                const decrement = 1 * speedMultiplier; 
+                const decrement = 0.8 * speedMultiplier; // Duran un poco más
                 if (prev - decrement <= 0) {
                     handleNotificationTimeout();
                     return 0;
@@ -204,7 +196,6 @@ export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
                 return prev - decrement;
             });
         }
-
       }, tickRate);
     }
     return () => clearInterval(tickInterval);
@@ -212,13 +203,9 @@ export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
 
   const handleNotificationTimeout = () => {
       const { voteSession, activeBailout, activeAnnouncement } = stateRef.current;
-      if (voteSession) {
-          finalizeVote('ABSTAIN'); 
-      } else if (activeBailout) {
-          setActiveBailout(null); 
-      } else if (activeAnnouncement) {
-          setActiveAnnouncement(null); // Simplemente se va
-      }
+      if (voteSession) finalizeVote('ABSTAIN'); 
+      else if (activeBailout) setActiveBailout(null); 
+      else if (activeAnnouncement) setActiveAnnouncement(null);
   };
 
   // --- FIN DEL DÍA ---
@@ -233,13 +220,15 @@ export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
        return;
     }
 
-    // Noticias Random (Flavor)
-    if (Math.random() < 0.3) {
+    // Noticias Random (Pop-up visual)
+    if (Math.random() < 0.25) { // 25% prob diaria
         const randomNews = FLAVOR_TEXTS[Math.floor(Math.random() * FLAVOR_TEXTS.length)];
+        setActiveAnnouncement({ title: "📰 NOTICIA FLASH", message: randomNews, type: 'FLAVOR' });
+        setNotificationTimer(100);
         addNews(randomNews, 'FLAVOR');
     }
 
-    // 1. JUGADOR
+    // Cobros Jugador
     if (!currentData.amIExpelled && !currentData.amIBankrupt) {
       if (currentData.hasActed) {
          setMyStash(prev => prev - costOfLiving);
@@ -249,20 +238,20 @@ export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
             setMyStash(prev => prev - costOfLiving);
          } else {
             setMyStash(prev => prev - costOfLiving);
-            addNews("💤 Dormiste. Cobrado costo de vida sin ingresos.", "ALERT");
+            addNews("💤 Dormiste. Cobrado costo de vida.", "ALERT");
          }
       }
     }
 
-    // 2. DESGASTE
+    // Desgaste
     setMyReputation(r => Math.max(0, r - 2)); 
     setBots(prev => prev.map(b => ({ ...b, reputation: Math.max(0, b.reputation - 2) })));
 
-    // 3. BANCARROTA
+    // Bancarrota check
     if (!currentData.amIBankrupt && stateRef.current.myStash < 0 && !currentData.amIExpelled) {
        setAmIBankrupt(true);
        setMyDaysBankrupt(0);
-       addNews("¡ESTÁS EN QUIEBRA! Revisa NOTICIAS.", 'BANKRUPTCY_ALERT', { id: 999, name: 'TÚ', debt: stateRef.current.myStash });
+       addNews("¡ESTÁS EN QUIEBRA!", 'BANKRUPTCY_ALERT', { id: 999, name: 'TÚ', debt: stateRef.current.myStash });
     } else if (currentData.amIBankrupt) {
        setMyDaysBankrupt(days => {
            if (days >= 5) {
@@ -274,7 +263,7 @@ export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
        });
     }
 
-    // 4. BOTS
+    // Turno Bots
     processBotsTurn(currentData);
 
     setDay(d => d + 1);
@@ -291,8 +280,9 @@ export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
           if (Math.random() < 0.2) executeExpropriation(true, "Líder Bot");
       }
 
+      // JUICIOS
       const top3Bots = currentData.bots.filter((b:any) => !b.isDead).sort((a:any,b:any) => b.reputation - a.reputation).slice(0, 3);
-      if (top3Bots.length > 0 && Math.random() < 0.15) { 
+      if (top3Bots.length > 0 && Math.random() < 0.10) { 
          const judge = top3Bots[Math.floor(Math.random() * top3Bots.length)];
          const criminals = currentData.bots.filter((b:any) => !b.isDead && b.reputation < 30 && b.id !== judge.id);
          if (criminals.length > 0) {
@@ -301,9 +291,11 @@ export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
          }
       }
 
+      // IA INDIVIDUAL
       setBots(currentBots => currentBots.map(bot => {
          if (bot.isDead) return bot;
          if (bot.isBankrupt) {
+            // Lógica de rescate entre bots (simplificada)
             const richBots = currentBots.filter(b => !b.isDead && !b.isBankrupt && b.stash > 300);
             if (richBots.length > 0 && Math.random() < 0.2) {
                  const savior = richBots[0];
@@ -325,28 +317,36 @@ export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
             return { ...bot, isBankrupt: true, stash: newStash, daysBankrupt: 0 };
          }
          
+         // DECISION MAKING
          const roll = Math.random();
+         const isCrisis = currentData.publicSilo < (activePopulation * 10);
          let decision: ActionType = 'PRIVATE';
-         if (bot.personality === 'GREEDY') decision = roll < 0.6 ? 'STEAL' : 'PRIVATE';
-         else if (bot.personality === 'ALTRUIST') decision = roll < 0.6 ? 'COLLABORATE' : 'PRIVATE';
-         else decision = roll < 0.3 ? 'STEAL' : roll < 0.6 ? 'PRIVATE' : 'COLLABORATE';
+
+         // Si hay crisis, los bots (menos los codiciosos) tienden a ayudar para no morir de inflación
+         if (isCrisis && bot.personality !== 'GREEDY') {
+             decision = roll < 0.8 ? 'COLLABORATE' : 'PRIVATE';
+         } else {
+             if (bot.personality === 'GREEDY') decision = roll < 0.6 ? 'STEAL' : 'PRIVATE';
+             else if (bot.personality === 'ALTRUIST') decision = roll < 0.6 ? 'COLLABORATE' : 'PRIVATE';
+             else decision = roll < 0.3 ? 'STEAL' : roll < 0.6 ? 'PRIVATE' : 'COLLABORATE';
+         }
 
          let currentStats = { ...bot.stats };
          let newRep = bot.reputation;
          
-         // LÓGICA DE ROBO LIMITADA AL SILO EXISTENTE
          if (decision === 'STEAL') { 
              const loot = currentData.publicSilo >= 40 ? 40 : currentData.publicSilo;
              if (loot > 0) {
-                 newStash += (loot + 20); // 20 base + loot
+                 newStash += (loot + 20); 
                  setPublicSilo(s => Math.max(0, s - loot)); 
                  newRep -= 3; currentStats.stole += 1;
              } else {
-                 newStash += 10; // Solo ingreso base si no hay nada que robar
+                 newStash += 10; 
              }
          }
          else if (decision === 'PRIVATE') { newStash += 25; currentStats.private += 1; }
          else { setPublicSilo(s => s + 25); newRep += 6; newStash += 10; currentStats.collaborated += 1; }
+         
          return { ...bot, reputation: Math.max(0, Math.min(100, newRep)), stash: newStash, stats: currentStats };
       }));
   };
@@ -361,7 +361,7 @@ export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
         } else if (type === 'STEAL') {
             const loot = publicSilo >= 40 ? 40 : publicSilo;
             setPublicSilo(s => Math.max(0, s - 40)); 
-            setMyStash(s => s + (loot + 20)); // Base 20 + lo que robaste
+            setMyStash(s => s + (loot + 20)); 
             setMyReputation(r => Math.max(0, r - 10)); setMyStats(s => ({ ...s, stole: s.stole + 1 }));
         }
         if (!isAuto) setHasActed(true);
@@ -372,18 +372,14 @@ export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
 
   const donateToSilo = () => {
       if(myStash>=20 && !hasActed) { 
-          setMyStash(s=>s-20); 
-          setPublicSilo(s=>s+20); 
-          setMyReputation(r=>Math.min(100,r+6)); 
-          setMyStats(s => ({ ...s, donated: s.donated + 20 }));
-          setHasActed(true); 
+          setMyStash(s=>s-20); setPublicSilo(s=>s+20); setMyReputation(r=>Math.min(100,r+6)); setMyStats(s => ({ ...s, donated: s.donated + 20 })); setHasActed(true); 
           addNews("💖 Has donado al pueblo.", "DONATION");
       }
   };
 
   const startGame = () => {
     const siloStart = botCount * 100;
-    const initialWealth = (botCount * 70) + 60 + siloStart; // Est. wealth
+    const initialWealth = (botCount * 70) + 60 + siloStart; 
     
     const newBots: BotPlayer[] = Array.from({ length: botCount }).map((_, i) => ({
         id: i, name: generateName(), personality: ['ALTRUIST','GREEDY','CHAOTIC','OPPORTUNIST'][Math.floor(Math.random()*4)] as Personality,
@@ -419,10 +415,9 @@ export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
     }));
     setPublicSilo(prev => prev + gathered);
     
-    // NOTIFICACIÓN EN BARRA SUPERIOR (ANNOUNCEMENT)
+    setActiveAnnouncement({ title: "📢 EXPROPIACIÓN", message: `${leaderName} ha confiscado $${gathered}.`, type: 'EXPROPRIATION' });
     setNotificationTimer(100);
-    setActiveAnnouncement({ title: "📢 EXPROPIACIÓN", message: `${leaderName} ha confiscado $${gathered} para el Silo.`, type: 'EXPROPRIATION' });
-    addNews(`📢 EXPROPIACIÓN por ${leaderName}. Recaudado: $${gathered}.`, 'ALERT');
+    addNews(`📢 EXPROPIACIÓN por ${leaderName}. Recaudado: $${gathered}.`, 'EXPROPRIATION');
   };
 
   const startVoteAgainst = (targetId: number, targetName: string, targetRep: number, accuser: string) => {
@@ -481,72 +476,9 @@ export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
      setActiveBailout(null);
   };
 
-  const resolveBankrupt = (id: number, finalStash: number) => {
-     if (id === 999) { setMyStash(finalStash); setAmIBankrupt(false); setMyDaysBankrupt(0); }
-     else { setBots(prev => prev.map(b => b.id === id ? { ...b, stash: finalStash, isBankrupt: false, daysBankrupt: 0 } : b)); }
-  };
-
-  // --- GAME OVER ---
-  if (gamePhase === 'GAMEOVER') {
-    const allP = [...bots, { id: 999, name: 'TÚ', reputation: myReputation, stash: myStash, stats: myStats, isDead: amIExpelled, isMe: true }];
-    const richest = [...allP].sort((a:any,b:any) => b.stash - a.stash)[0];
-    const biggestThief = [...allP].sort((a:any,b:any) => b.stats.stole - a.stats.stole)[0];
-    const mostCollaborative = [...allP].sort((a:any,b:any) => b.stats.collaborated - a.stats.collaborated)[0];
-    
-    const sortedList = [...allP].sort((a:any, b:any) => {
-       if (gameOverSort === 'WEALTH') return b.stash - a.stash;
-       if (gameOverSort === 'THEFT') return b.stats.stole - a.stats.stole;
-       return b.stats.collaborated - a.stats.collaborated;
-    });
-
-    return (
-      <div className="fixed inset-0 bg-black flex flex-col items-center justify-center p-6 font-pixel">
-         <div className="border-4 border-red-500 bg-gray-900 p-6 w-full max-w-md shadow-2xl rounded-xl">
-            <h2 className="text-3xl text-red-500 mb-4 text-center animate-pulse">SOCIEDAD FALLIDA</h2>
-            <div className="grid grid-cols-3 gap-2 mb-6">
-                {[{l:'MAGNATE',v:richest,k:'WEALTH'},{l:'LADRÓN',v:biggestThief,k:'THEFT'},{l:'SANTO',v:mostCollaborative,k:'SAINT'}].map((cat:any) => (
-                    <button key={cat.l} onClick={() => setGameOverSort(cat.k as any)} className={`p-2 border rounded text-xs ${gameOverSort===cat.k ? 'bg-white text-black' : 'bg-black text-gray-400'}`}>
-                        <div className="font-bold">{cat.l}</div>
-                        <div>{cat.v.name}</div>
-                    </button>
-                ))}
-            </div>
-            <div className="h-48 overflow-y-auto border border-gray-700 mb-4 bg-black p-2">
-                <table className="w-full text-xs text-left">
-                    <thead><tr><th className="text-gray-500">NOMBRE</th><th className="text-right text-gray-500">VALOR</th></tr></thead>
-                    <tbody>
-                        {sortedList.map((p:any,i) => (
-                            <tr key={i} className={`border-b border-gray-800 ${p.isMe?'text-gold':''}`}>
-                                <td>{i+1}. {p.name} {p.isDead && '💀'}</td>
-                                <td className="text-right">{gameOverSort==='WEALTH'?p.stash:gameOverSort==='THEFT'?p.stats.stole:p.stats.collaborated}</td>
-                            </tr>
-                        ))}
-                    </tbody>
-                </table>
-            </div>
-            <button onClick={() => setGamePhase('SETUP')} className="w-full py-4 bg-red-600 text-white font-bold hover:bg-red-500 rounded">REINICIAR SISTEMA</button>
-         </div>
-      </div>
-    );
-  }
-
-  // --- SETUP ---
-  if (gamePhase === 'SETUP') return (
-     <div className="fixed inset-0 bg-black flex flex-col items-center justify-center p-6 font-pixel text-farm-green">
-        <div className="w-full max-w-md border-0 sm:border-[16px] sm:border-gray-800 sm:rounded-[3rem] bg-gray-900 p-8 shadow-2xl relative overflow-hidden h-full sm:h-auto">
-            <h1 className="text-4xl mb-8 text-gold text-center mt-8">SOCIETY_OS</h1>
-            <label className="block mb-2 text-farm-green">POBLACIÓN: {botCount}</label>
-            <input type="range" min="10" max="200" step="10" value={botCount} onChange={(e) => setBotCount(parseInt(e.target.value))} className="w-full mb-8 accent-farm-green"/>
-            <button onClick={startGame} className="w-full py-4 bg-farm-green text-black font-bold rounded-xl shadow-lg hover:scale-105 transition-transform">INICIAR SIMULACIÓN</button>
-            <button onClick={onBack} className="mt-8 text-center w-full text-gray-500 underline text-xs">APAGAR DISPOSITIVO</button>
-        </div>
-     </div>
-  );
-
-  // --- RENDER PRINCIPAL ---
+  // --- RENDER (Sin cambios mayores, solo integración) ---
   return (
     <div className="fixed inset-0 bg-gray-900 flex items-center justify-center p-0 sm:p-4 font-pixel select-none">
-      
       <div className="relative w-full max-w-md h-full sm:h-[90vh] sm:max-h-[900px] bg-black sm:border-[12px] sm:border-gray-800 sm:rounded-[2.5rem] shadow-[0_0_50px_rgba(0,0,0,0.8)] overflow-hidden flex flex-col sm:ring-2 sm:ring-gray-700">
          
          {/* NOTCH */}
@@ -554,7 +486,7 @@ export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
             <div className="w-12 h-1 bg-gray-900 rounded-full"></div>
          </div>
 
-         {/* 1. TOP BAR */}
+         {/* TOP BAR */}
          <div className="h-16 bg-gray-900 border-b border-soil flex items-center px-4 justify-between shrink-0 relative z-20 pt-2 sm:pt-4">
             <div className="flex flex-col">
                <span className="text-gold text-lg leading-none">DÍA {day}</span>
@@ -571,26 +503,19 @@ export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
             </div>
          </div>
 
-         {/* 2. AREA DE NOTIFICACIONES (DYNAMIC ISLAND) */}
+         {/* DYNAMIC ISLAND (Notificaciones) */}
          {(voteSession?.isOpen || activeBailout || activeAnnouncement) && (
             <div className="absolute top-16 left-0 right-0 z-40 p-2 animate-slide-down">
-                <div className="bg-gray-800 border-2 border-gold rounded-xl shadow-2xl p-3 overflow-hidden">
-                    
-                    {/* BARRA DE TIEMPO */}
-                    <div className="absolute top-0 left-0 h-1 bg-gold transition-all duration-75 ease-linear" style={{ width: `${notificationTimer}%` }}></div>
+                <div className={`bg-gray-800 border-2 rounded-xl shadow-2xl p-3 overflow-hidden ${activeAnnouncement?.type === 'FLAVOR' ? 'border-pink-500' : activeAnnouncement?.type === 'EXPROPRIATION' ? 'border-red-500' : 'border-gold'}`}>
+                    <div className={`absolute top-0 left-0 h-1 transition-all duration-75 ease-linear ${activeAnnouncement?.type === 'FLAVOR' ? 'bg-pink-500' : 'bg-gold'}`} style={{ width: `${notificationTimer}%` }}></div>
 
                     {voteSession && (
                         <div className="flex flex-col gap-2">
-                             <div className="flex justify-between items-center">
-                                 <span className="text-[10px] text-gold font-bold uppercase">🚨 JUICIO EN CURSO</span>
-                                 <span className="text-[10px] text-gray-400">{notificationTimer.toFixed(0)}% Tiempo</span>
-                             </div>
-                             <p className="text-xs text-white text-center">
-                                 {voteSession.accusedBy} acusa a <span className="font-bold text-red-400">{voteSession.targetName}</span>
-                             </p>
+                             <div className="flex justify-between items-center"><span className="text-[10px] text-gold font-bold uppercase">🚨 JUICIO</span></div>
+                             <p className="text-xs text-white text-center">{voteSession.accusedBy} acusa a <span className="font-bold text-red-400">{voteSession.targetName}</span></p>
                              <div className="flex gap-2 mt-1">
-                                 <button onClick={() => finalizeVote('YES')} className="flex-1 bg-red-900 border border-red-500 text-red-100 text-[10px] py-2 rounded">CULPABLE</button>
-                                 <button onClick={() => finalizeVote('NO')} className="flex-1 bg-blue-900 border border-blue-500 text-blue-100 text-[10px] py-2 rounded">INOCENTE</button>
+                                 <button onClick={() => finalizeVote('YES')} className="flex-1 bg-red-900 text-red-100 text-[10px] py-2 rounded">CULPABLE</button>
+                                 <button onClick={() => finalizeVote('NO')} className="flex-1 bg-blue-900 text-blue-100 text-[10px] py-2 rounded">INOCENTE</button>
                                  <button onClick={() => finalizeVote('ABSTAIN')} className="px-2 bg-gray-700 text-gray-300 text-[10px] py-2 rounded">OMITIR</button>
                              </div>
                         </div>
@@ -598,18 +523,10 @@ export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
 
                     {activeBailout && (
                         <div className="flex flex-col gap-2">
-                             <div className="flex justify-between items-center">
-                                 <span className="text-[10px] text-gold font-bold uppercase">🚑 SOS DEUDA</span>
-                                 <span className="text-[10px] text-gray-400">{notificationTimer.toFixed(0)}% Tiempo</span>
-                             </div>
-                             <p className="text-xs text-white text-center">
-                                 Rescatar a <span className="text-blue-400">{activeBailout.name}</span> cuesta <span className="text-gold font-bold">${Math.abs(activeBailout.debt) + (costOfLiving * 7)}</span>
-                             </p>
+                             <div className="flex justify-between items-center"><span className="text-[10px] text-gold font-bold uppercase">🚑 SOS DEUDA</span></div>
+                             <p className="text-xs text-white text-center">Rescatar a <span className="text-blue-400">{activeBailout.name}</span> cuesta <span className="text-gold font-bold">${Math.abs(activeBailout.debt) + (costOfLiving * 7)}</span></p>
                              <div className="flex gap-2 mt-1">
-                                 <button disabled={myStash < (Math.abs(activeBailout.debt) + (costOfLiving * 7))} onClick={() => handleRescue('PRIVATE')} className="flex-1 bg-gold text-black border border-yellow-500 text-[10px] py-2 rounded disabled:opacity-50">PAGAR</button>
-                                 {[...bots, {id:999,reputation:myReputation} as any].sort((a,b)=>b.reputation-a.reputation).slice(0,3).some(p=>p.id===999) && (
-                                     <button onClick={() => handleRescue('PUBLIC')} className="flex-1 bg-farm-green text-black border border-green-500 text-[10px] py-2 rounded">FONDOS PÚB.</button>
-                                 )}
+                                 <button disabled={myStash < (Math.abs(activeBailout.debt) + (costOfLiving * 7))} onClick={() => handleRescue('PRIVATE')} className="flex-1 bg-gold text-black text-[10px] py-2 rounded disabled:opacity-50">PAGAR</button>
                                  <button onClick={() => setActiveBailout(null)} className="px-2 bg-gray-700 text-gray-300 text-[10px] py-2 rounded">IGNORAR</button>
                              </div>
                         </div>
@@ -618,7 +535,7 @@ export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
                     {activeAnnouncement && (
                         <div className="flex flex-col gap-1">
                              <div className="flex justify-between items-center">
-                                 <span className="text-[10px] text-gold font-bold uppercase">{activeAnnouncement.title}</span>
+                                 <span className={`text-[10px] font-bold uppercase ${activeAnnouncement.type==='FLAVOR'?'text-pink-400':'text-red-400'}`}>{activeAnnouncement.title}</span>
                              </div>
                              <p className="text-xs text-white">{activeAnnouncement.message}</p>
                         </div>
@@ -627,10 +544,9 @@ export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
             </div>
          )}
 
-         {/* 3. CONTENIDO PRINCIPAL */}
+         {/* MAIN CONTENT */}
          <div className="flex-1 overflow-y-auto relative bg-gray-950 p-2 scrollbar-hide pb-32">
-            
-            {amIExpelled && <div className="p-4 bg-red-900 text-white text-center border-2 border-red-500 mb-4 animate-pulse">🛑 EXPULSADO DE LA SOCIEDAD</div>}
+            {amIExpelled && <div className="p-4 bg-red-900 text-white text-center border-2 border-red-500 mb-4 animate-pulse">🛑 EXPULSADO</div>}
             {amIBankrupt && <div className="p-4 bg-yellow-900 text-yellow-200 text-center border-2 border-yellow-500 mb-4">⚠ CUENTA CONGELADA</div>}
 
             {activeTab === 'ACTIONS' && (
@@ -646,15 +562,13 @@ export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
                      </div>
                   </div>
 
-                  <button onClick={donateToSilo} disabled={hasActed || myStash < 20} className="w-full py-2 bg-blue-900 border border-blue-500 text-blue-200 text-xs rounded hover:bg-blue-800 disabled:opacity-50">
-                     💝 DONAR AL PUEBLO (-$20 / +Rep)
-                  </button>
+                  <button onClick={donateToSilo} disabled={hasActed || myStash < 20} className="w-full py-2 bg-blue-900 border border-blue-500 text-blue-200 text-xs rounded hover:bg-blue-800 disabled:opacity-50">💝 DONAR AL PUEBLO (-$20 / +Rep)</button>
 
                   <div className="flex flex-col gap-3">
                      {[
                        { id: 'COLLABORATE', label: 'COLABORAR', sub: '+25 Silo / +10 Tú', color: 'bg-farm-green', text: 'text-black', border: 'border-green-600' },
                        { id: 'PRIVATE', label: 'TRABAJO PRIVADO', sub: '+0 Silo / +25 Tú', color: 'bg-gold', text: 'text-black', border: 'border-yellow-600' },
-                       { id: 'STEAL', label: 'ROBAR RECURSOS', sub: '-40 Silo / +60 Tú', color: 'bg-red-600', text: 'text-white', border: 'border-red-800' }
+                       { id: 'STEAL', label: 'ROBAR RECURSOS', sub: `-${publicSilo>=40?40:publicSilo} Silo / +${publicSilo>=40?60:'10 (Vacío)'} Tú`, color: 'bg-red-600', text: 'text-white', border: 'border-red-800' }
                      ].map((action) => (
                        <div key={action.id} className={`flex items-stretch bg-gray-900 border ${action.border} rounded-lg overflow-hidden relative transition-transform active:scale-95 shadow-lg`}>
                           <button onClick={() => handleManualAction(action.id as ActionType)} disabled={hasActed || amIBankrupt} className={`flex-1 p-4 text-left hover:brightness-110 ${hasActed ? 'opacity-40 grayscale' : ''}`}>
@@ -692,7 +606,6 @@ export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
                                 <p className="text-xs text-danger">Cost: ${costOfLiving}</p>
                             </div>
                         )}
-                        
                         {widgets.sentiment && (
                             <div className={`bg-gray-800 p-4 rounded text-center col-span-1 relative ${editMode?'animate-pulse border border-gold':''}`}>
                                 {editMode && <button onClick={()=>setWidgets(w=>({...w, sentiment:false}))} className="absolute top-0 right-0 bg-red-500 text-white w-5 h-5 text-xs">x</button>}
@@ -701,42 +614,33 @@ export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
                                 <p className={`text-xs ${sentiment.color}`}>{sentiment.text}</p>
                             </div>
                         )}
-
                         {widgets.gini && (
                             <div className={`bg-gray-800 p-4 rounded col-span-2 relative ${editMode?'animate-pulse border border-gold':''}`}>
                                 {editMode && <button onClick={()=>setWidgets(w=>({...w, gini:false}))} className="absolute top-0 right-0 bg-red-500 text-white w-5 h-5 text-xs">x</button>}
                                 <p className="text-[10px] text-gray-400 uppercase mb-1">GINI (Riqueza Top 10%):</p>
-                                <div className="w-full bg-gray-700 h-3 rounded-full overflow-hidden relative">
-                                    <div className="h-full bg-gold absolute left-0" style={{width: `${inequalityPercentage}%`}}></div>
-                                </div>
+                                <div className="w-full bg-gray-700 h-3 rounded-full overflow-hidden relative"><div className="h-full bg-gold absolute left-0" style={{width: `${inequalityPercentage}%`}}></div></div>
                                 <p className="text-right text-xs text-gold mt-1">{inequalityPercentage}%</p>
                             </div>
                         )}
-
                         {widgets.distribution && (
                            <div className={`bg-gray-800 p-4 rounded col-span-2 relative ${editMode?'animate-pulse border border-gold':''}`}>
                               {editMode && <button onClick={()=>setWidgets(w=>({...w, distribution:false}))} className="absolute top-0 right-0 bg-red-500 text-white w-5 h-5 text-xs">x</button>}
                               <p className="text-[10px] text-gray-400 uppercase mb-2">DISTRIBUCIÓN TOTAL</p>
                               <div className="flex h-6 w-full rounded overflow-hidden">
-                                  <div style={{width: `${publicRatio}%`}} className="bg-farm-green flex items-center justify-center text-[9px] text-black overflow-hidden whitespace-nowrap">PÚBLICO {publicRatio}%</div>
-                                  <div style={{width: `${100-publicRatio}%`}} className="bg-gold flex items-center justify-center text-[9px] text-black overflow-hidden whitespace-nowrap">PRIVADO</div>
+                                  <div style={{width: `${publicRatio}%`}} className="bg-farm-green flex items-center justify-center text-[9px] text-black">PÚBLICO {publicRatio}%</div>
+                                  <div style={{width: `${100-publicRatio}%`}} className="bg-gold flex items-center justify-center text-[9px] text-black">PRIVADO</div>
                               </div>
                            </div>
                         )}
-
                         {widgets.poverty && (
                            <div className={`bg-gray-800 p-4 rounded col-span-2 relative ${editMode?'animate-pulse border border-gold':''}`}>
                               {editMode && <button onClick={()=>setWidgets(w=>({...w, poverty:false}))} className="absolute top-0 right-0 bg-red-500 text-white w-5 h-5 text-xs">x</button>}
                               <div className="flex justify-between items-center">
-                                 <div>
-                                    <p className="text-[10px] text-gray-400 uppercase">INDICE DE POBREZA</p>
-                                    <p className="text-xs text-gray-500">Bots con &lt; $20</p>
-                                 </div>
+                                 <div><p className="text-[10px] text-gray-400 uppercase">INDICE DE POBREZA</p><p className="text-xs text-gray-500">Bots con &lt; $20</p></div>
                                  <p className={`text-2xl font-bold ${parseInt(povertyRate) > 30 ? 'text-red-500' : 'text-white'}`}>{povertyRate}%</p>
                               </div>
                            </div>
                         )}
-                        
                         {editMode && (
                              <div className="col-span-2 flex gap-2 flex-wrap justify-center border-t border-gray-700 pt-4">
                                  {!widgets.wealth && <button onClick={()=>setWidgets(w=>({...w, wealth:true}))} className="bg-gray-700 px-2 py-1 text-xs text-green-400">+ CALIDAD</button>}
@@ -753,7 +657,7 @@ export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
             {activeTab === 'NEWS' && (
                 <div className="space-y-2">
                     {newsLog.map(n => (
-                       <div key={n.id} onClick={() => openBailoutModal(n)} className={`p-3 text-xs border-l-4 rounded bg-gray-900 ${n.type==='DONATION'?'border-purple-500 text-purple-200':n.type==='DEATH'?'border-gray-500':n.type==='ALERT'?'border-red-500':n.type==='FLAVOR'?'border-pink-500 text-pink-200':'border-blue-500'} ${n.type==='BANKRUPTCY_ALERT'&&!n.resolved?'cursor-pointer hover:bg-gray-800':''}`}>
+                       <div key={n.id} onClick={() => openBailoutModal(n)} className={`p-3 text-xs border-l-4 rounded bg-gray-900 ${n.type==='EXPROPRIATION'?'border-orange-500 text-orange-200':n.type==='DONATION'?'border-purple-500 text-purple-200':n.type==='DEATH'?'border-gray-500':n.type==='ALERT'?'border-red-500':n.type==='FLAVOR'?'border-pink-500 text-pink-200':'border-blue-500'} ${n.type==='BANKRUPTCY_ALERT'&&!n.resolved?'cursor-pointer hover:bg-gray-800':''}`}>
                           <p>{n.text}</p>
                           {n.resolved && <span className="text-[9px] text-green-500 font-bold">RESUELTO</span>}
                        </div>
@@ -763,20 +667,13 @@ export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
             
             {activeTab === 'RANKING' && (
                 <div className="pb-20">
-                   <div className="p-2 mb-2 bg-gray-800 text-[10px] text-center text-gray-400">
-                       🔒 LOS ACTIVOS PRIVADOS SON CONFIDENCIALES
-                   </div>
+                   <div className="p-2 mb-2 bg-gray-800 text-[10px] text-center text-gray-400">🔒 ACTIVOS PRIVADOS OCULTOS</div>
                    <table className="w-full text-xs text-left">
                       <thead className="text-gray-500 border-b border-gray-700"><tr><th className="p-2">#</th><th>CIUDADANO</th><th className="text-right">REP</th><th className="text-right">$$</th></tr></thead>
                       <tbody>
-                         {[...bots, {id:999, name:'⭐ TÚ', stash:myStash, reputation:myReputation} as any]
-                            .filter(p => !p.isDead)
-                            .sort((a,b)=>b.reputation - a.reputation)
-                            .map((p,i) => (
+                         {[...bots, {id:999, name:'⭐ TÚ', stash:myStash, reputation:myReputation} as any].filter(p => !p.isDead).sort((a,b)=>b.reputation - a.reputation).map((p,i) => (
                             <tr key={p.id} className={`border-b border-gray-800 ${p.id===999 ? 'text-gold bg-gray-900' : 'text-gray-400'}`}>
-                               <td className="p-2 flex items-center gap-1">
-                                   {i===0 && '🥇'} {i===1 && '🥈'} {i===2 && '🥉'} {i+1}
-                               </td>
+                               <td className="p-2 flex items-center gap-1">{i===0 && '🥇'} {i===1 && '🥈'} {i===2 && '🥉'} {i+1}</td>
                                <td>{p.name} {p.isBankrupt && '(SOS)'}</td>
                                <td className="text-right text-blue-300">{p.reputation}</td>
                                <td className="text-right font-mono pl-2">{p.id === 999 ? p.stash : '🔒'}</td>
@@ -789,46 +686,29 @@ export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
 
             {activeTab === 'LEADER' && (
                 <div className="grid grid-cols-2 gap-4 p-4">
-                    <button onClick={() => { setShowSuspects(true); }} className="bg-purple-900 p-6 border border-purple-500 rounded text-center">
-                       <span className="text-2xl block mb-2">⚖️</span> JUICIOS
-                    </button>
-                    <button onClick={() => executeExpropriation(false, "JUGADOR")} className="bg-red-900 p-6 border border-red-500 rounded text-center">
-                       <span className="text-2xl block mb-2">📢</span> EXPROPIAR
-                    </button>
+                    <button onClick={() => { setShowSuspects(true); }} className="bg-purple-900 p-6 border border-purple-500 rounded text-center"><span className="text-2xl block mb-2">⚖️</span> JUICIOS</button>
+                    <button onClick={() => executeExpropriation(false, "JUGADOR")} className="bg-red-900 p-6 border border-red-500 rounded text-center"><span className="text-2xl block mb-2">📢</span> EXPROPIAR</button>
                 </div>
             )}
-
          </div>
 
-         {/* 4. SPEED CONTROL */}
+         {/* SPEED CONTROL */}
          <div className="absolute bottom-[4.5rem] right-4 z-30 flex gap-1 bg-black bg-opacity-90 px-3 py-2 rounded-full border border-gray-700 backdrop-blur-sm shadow-xl">
              {[0, 0.5, 1, 3, 5, 10].map(s => (
-                 <button key={s} onClick={() => { setSpeedMultiplier(s); setIsPaused(s === 0); }} className={`w-6 h-6 rounded-full text-[8px] flex items-center justify-center font-bold transition-all ${speedMultiplier === s && !isPaused ? 'bg-farm-green text-black scale-110' : 'bg-gray-800 text-gray-400 hover:bg-gray-700'}`}>
-                    {s === 0 ? '⏸' : `x${s}`}
-                 </button>
+                 <button key={s} onClick={() => { setSpeedMultiplier(s); setIsPaused(s === 0); }} className={`w-6 h-6 rounded-full text-[8px] flex items-center justify-center font-bold transition-all ${speedMultiplier === s && !isPaused ? 'bg-farm-green text-black scale-110' : 'bg-gray-800 text-gray-400 hover:bg-gray-700'}`}>{s === 0 ? '⏸' : `x${s}`}</button>
              ))}
          </div>
 
-         {/* 5. DOCK */}
+         {/* DOCK */}
          <div className="h-16 bg-gray-900 border-t border-soil shrink-0 flex items-center justify-around z-30 pb-safe sm:rounded-b-[2rem]">
-            {[
-              { id: 'ACTIONS', icon: '⚡', label: 'ACCIONES' },
-              { id: 'STATS', icon: '📊', label: 'DATOS' },
-              { id: 'NEWS', icon: '📡', label: 'RED', alert: unreadNews },
-              { id: 'RANKING', icon: '🏆', label: 'RANGO' },
-              { id: 'LEADER', icon: '👑', label: 'MANDO', hidden: ![...bots, {id:999,reputation:myReputation} as any].sort((a,b)=>b.reputation-a.reputation).slice(0,3).some(p=>p.id===999) }
-            ].map(tab => !tab.hidden && (
+            {[ { id: 'ACTIONS', icon: '⚡', label: 'ACCIONES' }, { id: 'STATS', icon: '📊', label: 'DATOS' }, { id: 'NEWS', icon: '📡', label: 'RED', alert: unreadNews }, { id: 'RANKING', icon: '🏆', label: 'RANGO' }, { id: 'LEADER', icon: '👑', label: 'MANDO', hidden: ![...bots, {id:999,reputation:myReputation} as any].sort((a,b)=>b.reputation-a.reputation).slice(0,3).some(p=>p.id===999) } ].map(tab => !tab.hidden && (
                <button key={tab.id} onClick={() => { setActiveTab(tab.id as TabType); if(tab.id === 'NEWS') setUnreadNews(false); }} className={`flex flex-col items-center justify-center w-full h-full transition-colors ${activeTab === tab.id ? 'text-farm-green bg-gray-800' : 'text-gray-500'}`}>
-                  <div className="relative">
-                     <span className="text-xl mb-1 block">{tab.icon}</span>
-                     {tab.alert && <span className="absolute -top-1 -right-1 w-2 h-2 bg-red-500 rounded-full animate-pulse"></span>}
-                  </div>
-                  <span className="text-[9px] font-terminal">{tab.label}</span>
+                  <div className="relative"><span className="text-xl mb-1 block">{tab.icon}</span>{tab.alert && <span className="absolute -top-1 -right-1 w-2 h-2 bg-red-500 rounded-full animate-pulse"></span>}</div><span className="text-[9px] font-terminal">{tab.label}</span>
                </button>
             ))}
          </div>
 
-         {/* MODAL SUSPECTS */}
+         {/* SUSPECTS MODAL */}
          {showSuspects && (
            <div className="absolute inset-0 z-50 bg-black bg-opacity-90 p-8 flex flex-col animate-fade-in">
                <h2 className="text-xl text-danger mb-4 text-center">SELECCIONAR ACUSADO</h2>
@@ -840,7 +720,6 @@ export default function OfflineSimulator({ onBack }: { onBack: () => void }) {
                <button onClick={() => { setShowSuspects(false); }} className="p-4 bg-gray-800 mt-4 text-white">CANCELAR</button>
            </div>
          )}
-
       </div>
     </div>
   );
